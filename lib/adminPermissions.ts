@@ -10,7 +10,8 @@ export type AdminCapability =
   | "MANAGE_USERS" // view any user, suspend/reinstate
   | "MANAGE_DISPUTES" // view + resolve disputes
   | "MANAGE_JOB_CATEGORIES"
-  | "MANAGE_VERIFICATIONS"; // review business/job-category submissions
+  | "MANAGE_VERIFICATIONS" // review business/job-category submissions
+  | "VIEW_PLATFORM_DATA"; // platform-wide errands/orders/revenue (read-only — no corresponding MANAGE_ variant yet)
 
 // SUPER_ADMIN is deliberately not listed here — it's handled as a bypass in
 // hasCapability below, since by definition it can do everything any other
@@ -25,9 +26,13 @@ const ROLE_CAPABILITIES: Record<Exclude<AdminRole, "SUPER_ADMIN">, AdminCapabili
     "MANAGE_DISPUTES",
     "MANAGE_JOB_CATEGORIES",
     "MANAGE_VERIFICATIONS",
+    "VIEW_PLATFORM_DATA",
   ],
   EDITOR: ["MANAGE_CONTENT"],
-  SUPPORT: ["MANAGE_USERS", "MANAGE_DISPUTES"],
+  // SUPPORT gets VIEW_PLATFORM_DATA alongside MANAGE_DISPUTES: resolving a
+  // dispute over an errand/order requires being able to look the thing up,
+  // not just the dispute record pointing at its id.
+  SUPPORT: ["MANAGE_USERS", "MANAGE_DISPUTES", "VIEW_PLATFORM_DATA"],
 };
 
 export function hasCapability(role: AdminRole | null, capability: AdminCapability): boolean {
