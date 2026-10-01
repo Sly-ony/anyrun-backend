@@ -1,0 +1,562 @@
+// ============================================================================
+// Anyrun — Prisma Schema (MongoDB)
+// ============================================================================
+// Notes on modeling choices:
+// - Mongo has no relational FK/unique-per-role enforcement, so singleton rules
+//   (e.g. one active CLEANING_PROVIDER) are enforced in the API layer, not here.
+// - `Location` and line-item shapes are modeled as Prisma "composite types"
+//   (embedded documents) since they're always owned by a single parent doc
+//   and don't need independent querying/relations.
+// - AccountProfile.roles is an array so a user can hold multiple roles
+//   (e.g. INDIVIDUAL_CUSTOMER + RUNNER) simultaneously, per the open question
+//   in the brief.
+// - Payment is a generic ledger entry that can point at an Order, a
+//   DeliveryJob, or a CleaningBooking (exactly one, enforced in app logic),
+//   since Mongo/Prisma has no clean polymorphic relation.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// Enums
+// ----------------------------------------------------------------------------
+
+enum AccountType {
+  INDIVIDUAL_CUSTOMER
+  RUNNER
+  BUSINESS_BUYER
+  BUSINESS_SUPPLIER
+  CLEANING_PROVIDER // admin-designated, singleton — enforced at application layer
+}
+
+// Derived automatically from an account's roles at sign-up (BUSINESS if any
+// of BUSINESS_BUYER/BUSINESS_SUPPLIER is selected, INDIVIDUAL otherwise) —
+// not a separate question the client has to ask. Drives whether business
+// verification is required before the account can transact as a business.
+enum AccountKind {
+  INDIVIDUAL
+  BUSINESS
+}
+
+// Orthogonal to marketplace `roles` (AccountType) — an account can be, say,
+// an INDIVIDUAL_CUSTOMER *and* a DEVELOPER admin at the same time. Null means
+// "not an admin at all". Permission matrix lives in lib/adminPermissions.ts.
+enum AdminRole {
+  SUPER_ADMIN // full access, including admin management and commission rates
+  EDITOR // blog + advert content only
+  SUPPORT // user visibility/suspension + disputes only
+  DEVELOPER // everything SUPER_ADMIN can do EXCEPT admin management and commission rate edits
+}
+
+enum VerificationType {
+  BUSINESS // proves the account is a legitimate business
+  JOB_CATEGORY // proves eligibility to do a specific kind of job (see JobCategory)
+}
+
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ErrandStatus {
+  OPEN
+  ACCEPTED
+  IN_PROGRESS
+  DELIVERED
+  COMPLETED
+  CANCELLED
+}
+
+enum RFQStatus {
+  OPEN
+  AWARDED
+  CLOSED
+}
+
+enum QuotationStatus {
+  SUBMITTED
+  ACCEPTED
+  REJECTED
+}
+
+enum OrderSourceType {
+  ERRAND
+  RFQ_QUOTATION
+  CATALOG_PURCHASE
+  CLEANING_BOOKING
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum DeliveryStatus {
+  REQUESTED
+  ASSIGNED
+  PICKED_UP
+  IN_TRANSIT
+  DELIVERED
+  CANCELLED
+}
+
+enum CleaningServiceScope {
+  DOMESTIC
+  COMMERCIAL
+}
+
+enum CleaningBookingStatus {
+  PENDING
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum NotificationType {
+  NEW_ERRAND_REQUEST
+  NEW_RFQ
+  QUOTATION_RECEIVED
+  QUOTATION_ACCEPTED
+  ORDER_PAID
+  DELIVERY_UPDATE
+  CLEANING_BOOKING_UPDATE
+  VERIFICATION_UPDATE
+  DISPUTE_UPDATE
+  ACCOUNT_SUSPENDED
+  GENERAL
+}
+
+enum PaymentSourceType {
+  ORDER
+  DELIVERY_JOB
+  CLEANING_BOOKING
+}
+
+// ----------------------------------------------------------------------------
+// Composite types (embedded documents)
+// ----------------------------------------------------------------------------
+
+type Location {
+  country    String
+  state      String // top-level administrative region — e.g. a UK county/region, not necessarily called "state" locally
+  city       String
+  area       String?
+  postalCode String? // e.g. UK postcode — important for delivery/logistics matching
+  latitude   Float?
+  longitude  Float?
+}
+
+type RFQLineItem {
+  itemId      String // client-generated id to let quotations reference this line
+  name        String
+  quantity    Int
+  notes       String?
+}
+
+type QuotationLineItem {
+  rfqItemId String? // references RFQLineItem.itemId when quoting per line
+  name      String
+  price     Float
+  notes     String?
+  available Boolean @default(true)
+}
+
+// ----------------------------------------------------------------------------
+// Core identity
+// ----------------------------------------------------------------------------
+
+model User {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  email         String   @unique
+  phone         String?  @unique
+  passwordHash  String? // null when the user authenticates via OAuth only
+  oauthProvider String?
+  oauthId       String?
+  name          String
+  avatarUrl     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  accountProfile AccountProfile?
+}
+
+model AccountProfile {
+  id            String        @id @default(auto()) @map("_id") @db.ObjectId
+  userId        String        @unique @db.ObjectId
+  user          User          @relation(fields: [userId], references: [id])
+  roles         AccountType[]
+  accountKind   AccountKind   // derived from roles at sign-up — see the enum comment
+  businessName  String? // used when roles includes BUSINESS_BUYER / BUSINESS_SUPPLIER
+  serviceRegions Location[] // regions this runner/supplier actively serves
+  isActive      Boolean       @default(true) // false = suspended (see suspension fields) or the CLEANING_PROVIDER singleton gate
+  adminRole     AdminRole? // null = not an admin. First one is bootstrapped via prisma/seed.ts; SUPER_ADMIN grants the rest via POST /api/admin/admins
+  // Job categories this RUNNER has opted into working. Any category with
+  // JobCategory.requiresVerification = true also needs an APPROVED
+  // Verification (type JOB_CATEGORY) before an errand in it can be accepted.
+  jobCategoryIds String[]     @db.ObjectId
+  suspensionReason String? // set by a SUPPORT/DEVELOPER/SUPER_ADMIN admin
+  suspendedAt   DateTime?
+  suspendedBy   String?       @db.ObjectId // the admin's AccountProfile.id
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  // Errand flow
+  errandRequestsPosted   ErrandRequest[] @relation("ErrandCustomer")
+  errandRequestsAccepted ErrandRequest[] @relation("ErrandRunner")
+
+  // RFQ / procurement flow
+  rfqsPosted        RFQ[]        @relation("RFQBuyer")
+  quotationsSubmitted Quotation[] @relation("QuotationSupplier")
+
+  // Catalog
+  catalogItems CatalogItem[] @relation("CatalogSupplier")
+
+  // Cleaning (as customer, or as the single reserved provider)
+  cleaningBookingsAsCustomer CleaningBooking[] @relation("CleaningCustomer")
+  cleaningBookingsAsProvider CleaningBooking[] @relation("CleaningProvider")
+
+  // Money
+  ordersAsPayer OrderTx[] @relation("OrderPayer")
+  ordersAsPayee OrderTx[] @relation("OrderPayee")
+
+  // Delivery jobs run by the founder's own logistics accounts
+  deliveryJobsAssigned DeliveryJob[] @relation("DeliveryAssignee")
+
+  notifications Notification[] @relation("NotificationRecipient")
+
+  // Business / job-category verification submissions
+  verifications Verification[] @relation("AccountVerifications")
+}
+
+// ----------------------------------------------------------------------------
+// Job categories + verification
+// ----------------------------------------------------------------------------
+
+// The managed list of job types a RUNNER can pick from when choosing what
+// work they want to do. `requiresVerification` is the column the founder
+// flagged: some categories (e.g. anything involving valuables, vulnerable
+// people, or specialist skills) require proof before a runner can accept
+// jobs in them; others don't. Deliberately its own collection rather than
+// reusing ErrandRequest.category's free-text field, so this list can be
+// curated and each entry can carry a verification requirement — the two are
+// kept in sync by name (see lib/verificationRules.ts).
+model JobCategory {
+  id                   String   @id @default(auto()) @map("_id") @db.ObjectId
+  name                 String   @unique
+  description          String?
+  requiresVerification Boolean  @default(false)
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  verifications Verification[]
+}
+
+// A verification submission: either "prove this account is a real business"
+// or "prove this runner is eligible for this specific job category". One
+// row per submission/resubmission attempt.
+model Verification {
+  id               String              @id @default(auto()) @map("_id") @db.ObjectId
+  accountProfileId String              @db.ObjectId
+  accountProfile   AccountProfile      @relation("AccountVerifications", fields: [accountProfileId], references: [id])
+  type             VerificationType
+  jobCategoryId    String?             @db.ObjectId // set when type = JOB_CATEGORY
+  jobCategory      JobCategory?        @relation(fields: [jobCategoryId], references: [id])
+  status           VerificationStatus  @default(PENDING)
+  documents        String[] // URLs to uploaded ID/proof-of-business/certification documents
+  notes            String? // submitter's own notes, if any
+  rejectionReason  String?
+  reviewedBy       String?             @db.ObjectId // reviewing admin's AccountProfile.id
+  submittedAt      DateTime            @default(now())
+  reviewedAt       DateTime?
+}
+
+// ----------------------------------------------------------------------------
+// A. Errand / go-get-this-for-me flow
+// ----------------------------------------------------------------------------
+
+model ErrandRequest {
+  id          String       @id @default(auto()) @map("_id") @db.ObjectId
+  customerId  String       @db.ObjectId
+  customer    AccountProfile @relation("ErrandCustomer", fields: [customerId], references: [id])
+  description String
+  category    String
+  location    Location
+  budget      Float?
+  photos      String[]
+  deadline    DateTime?
+  status      ErrandStatus @default(OPEN)
+  runnerId    String?      @db.ObjectId
+  runner      AccountProfile? @relation("ErrandRunner", fields: [runnerId], references: [id])
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  order       OrderTx?
+  deliveryJob DeliveryJob?
+}
+
+// ----------------------------------------------------------------------------
+// B. B2B procurement / quotation flow
+// ----------------------------------------------------------------------------
+
+model RFQ {
+  id                 String        @id @default(auto()) @map("_id") @db.ObjectId
+  buyerId            String        @db.ObjectId
+  buyer              AccountProfile @relation("RFQBuyer", fields: [buyerId], references: [id])
+  title              String?
+  lineItems          RFQLineItem[]
+  region             Location
+  deadline           DateTime?
+  status             RFQStatus     @default(OPEN)
+  awardedQuotationId String?       @db.ObjectId
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  quotations Quotation[]
+}
+
+model Quotation {
+  id         String              @id @default(auto()) @map("_id") @db.ObjectId
+  rfqId      String              @db.ObjectId
+  rfq        RFQ                 @relation(fields: [rfqId], references: [id])
+  supplierId String              @db.ObjectId
+  supplier   AccountProfile      @relation("QuotationSupplier", fields: [supplierId], references: [id])
+  lineItems  QuotationLineItem[]
+  totalPrice Float?
+  notes      String?
+  status     QuotationStatus     @default(SUBMITTED)
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  order OrderTx?
+}
+
+// ----------------------------------------------------------------------------
+// C. Supplier catalog / marketplace browse flow
+// ----------------------------------------------------------------------------
+
+model CatalogItem {
+  id          String         @id @default(auto()) @map("_id") @db.ObjectId
+  supplierId  String         @db.ObjectId
+  supplier    AccountProfile @relation("CatalogSupplier", fields: [supplierId], references: [id])
+  title       String
+  description String?
+  category    String
+  price       Float
+  currency    String         @default("GBP")
+  photos      String[]
+  region      Location
+  isAvailable Boolean        @default(true)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  orders OrderTx[]
+}
+
+// ----------------------------------------------------------------------------
+// D. Cleaning / facility management (exclusive vertical)
+// ----------------------------------------------------------------------------
+
+model CleaningBooking {
+  id             String                 @id @default(auto()) @map("_id") @db.ObjectId
+  customerId     String                 @db.ObjectId
+  customer       AccountProfile         @relation("CleaningCustomer", fields: [customerId], references: [id])
+  providerId     String                 @db.ObjectId // must resolve to the single active CLEANING_PROVIDER profile
+  provider       AccountProfile         @relation("CleaningProvider", fields: [providerId], references: [id])
+  serviceScope   CleaningServiceScope
+  address        Location
+  scheduledDate  DateTime
+  notes          String?
+  price          Float?
+  status         CleaningBookingStatus  @default(PENDING)
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  order OrderTx?
+}
+
+// ----------------------------------------------------------------------------
+// Money: orders, delivery, payments
+// ----------------------------------------------------------------------------
+
+// Named OrderTx (not "Order") to avoid clashing with reserved/likely-taken names
+// in generated clients; represents the doc's "Order / Transaction" entity.
+model OrderTx {
+  id               String          @id @default(auto()) @map("_id") @db.ObjectId
+  sourceType       OrderSourceType
+
+  // Exactly one of these should be set, matching sourceType.
+  sourceErrandId    String? @unique @db.ObjectId
+  sourceErrand      ErrandRequest? @relation(fields: [sourceErrandId], references: [id])
+  sourceQuotationId String? @unique @db.ObjectId
+  sourceQuotation   Quotation?     @relation(fields: [sourceQuotationId], references: [id])
+  sourceCatalogItemId String? @db.ObjectId
+  sourceCatalogItem   CatalogItem? @relation(fields: [sourceCatalogItemId], references: [id])
+  sourceCleaningBookingId String? @unique @db.ObjectId
+  sourceCleaningBooking   CleaningBooking? @relation(fields: [sourceCleaningBookingId], references: [id])
+
+  amount           Float // gross amount paid by the payer
+  commissionRate   Float // e.g. 0.1 for 10% — sourced from a settings/config table, not hardcoded
+  commissionAmount Float // amount - commissionAmount = payout to payee
+  payerId          String          @db.ObjectId
+  payer            AccountProfile  @relation("OrderPayer", fields: [payerId], references: [id])
+  payeeId          String          @db.ObjectId
+  payee            AccountProfile  @relation("OrderPayee", fields: [payeeId], references: [id])
+  paymentStatus    PaymentStatus   @default(PENDING)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  payment Payment?
+}
+
+// Separate from OrderTx: pickup + delivery fulfilled by the founder's own
+// logistics company, billed as its own fee distinct from platform commission.
+model DeliveryJob {
+  id              String         @id @default(auto()) @map("_id") @db.ObjectId
+  errandRequestId String?        @unique @db.ObjectId
+  errandRequest   ErrandRequest? @relation(fields: [errandRequestId], references: [id])
+  relatedOrderId  String?        @db.ObjectId // e.g. links to the RFQ/catalog OrderTx being delivered
+  pickupAddress   Location
+  dropoffAddress  Location
+  deliveryFee     Float
+  status          DeliveryStatus @default(REQUESTED)
+  assigneeId      String?        @db.ObjectId // staff/runner from the founder's delivery company
+  assignee        AccountProfile? @relation("DeliveryAssignee", fields: [assigneeId], references: [id])
+  scheduledAt     DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  payment Payment?
+}
+
+// Generic payment ledger entry. Points at exactly one of Order / DeliveryJob /
+// CleaningBooking (enforced in application logic) so all platform-processed
+// money — including the commission split — is auditable in one place.
+model Payment {
+  id                String            @id @default(auto()) @map("_id") @db.ObjectId
+  sourceType        PaymentSourceType
+
+  orderId           String?  @unique @db.ObjectId
+  order             OrderTx? @relation(fields: [orderId], references: [id])
+  deliveryJobId     String?  @unique @db.ObjectId
+  deliveryJob       DeliveryJob? @relation(fields: [deliveryJobId], references: [id])
+  cleaningBookingId String?  @unique @db.ObjectId
+  cleaningBooking   CleaningBooking? @relation(fields: [cleaningBookingId], references: [id])
+
+  amount            Float
+  commissionAmount  Float?  // populated when sourceType is ORDER
+  deliveryFee       Float?  // populated when sourceType is DELIVERY_JOB
+  status            PaymentStatus @default(PENDING)
+  provider          String        @default("mock") // swap for real gateway later
+  providerRef       String?
+  paidAt            DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+}
+
+// ----------------------------------------------------------------------------
+// Notifications (region-matched)
+// ----------------------------------------------------------------------------
+
+model Notification {
+  id              String           @id @default(auto()) @map("_id") @db.ObjectId
+  recipientId     String           @db.ObjectId
+  recipient       AccountProfile   @relation("NotificationRecipient", fields: [recipientId], references: [id])
+  type            NotificationType
+  title           String
+  message         String
+  relatedErrandId String?          @db.ObjectId
+  relatedRFQId    String?          @db.ObjectId
+  isRead          Boolean          @default(false)
+  createdAt       DateTime         @default(now())
+}
+
+// ----------------------------------------------------------------------------
+// Admin: content (EDITOR), disputes (SUPPORT), commission rates (SUPER_ADMIN)
+// ----------------------------------------------------------------------------
+
+enum BlogPostStatus {
+  DRAFT
+  PUBLISHED
+}
+
+model BlogPost {
+  id             String         @id @default(auto()) @map("_id") @db.ObjectId
+  title          String
+  slug           String         @unique
+  content        String
+  coverImageUrl  String?
+  status         BlogPostStatus @default(DRAFT)
+  authorId       String         @db.ObjectId // the EDITOR/DEVELOPER/SUPER_ADMIN who wrote it
+  publishedAt    DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+}
+
+model AdvertPost {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  title     String
+  imageUrl  String
+  linkUrl   String?
+  placement String? // free text, e.g. "home_banner", "catalog_sidebar" — no fixed taxonomy yet
+  startDate DateTime?
+  endDate   DateTime?
+  isActive  Boolean   @default(true)
+  authorId  String    @db.ObjectId
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+enum DisputeRelatedType {
+  ERRAND
+  RFQ
+  CATALOG_ORDER
+  CLEANING_BOOKING
+  DELIVERY_JOB
+  OTHER
+}
+
+enum DisputeStatus {
+  OPEN
+  IN_REVIEW
+  RESOLVED
+  DISMISSED
+}
+
+model Dispute {
+  id              String             @id @default(auto()) @map("_id") @db.ObjectId
+  raisedById      String             @db.ObjectId
+  againstId       String?            @db.ObjectId // the other party, if there is one
+  relatedType     DisputeRelatedType
+  relatedId       String?            @db.ObjectId // loose reference — id of the Order/ErrandRequest/etc., not an enforced relation
+  subject         String
+  description     String
+  status          DisputeStatus      @default(OPEN)
+  assignedToId    String?            @db.ObjectId // a SUPPORT/DEVELOPER/SUPER_ADMIN admin
+  resolutionNotes String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  resolvedAt      DateTime?
+}
+
+// One row per OrderSourceType. A missing row means "use the env var default"
+// (see lib/commission.ts) — this table only holds explicit overrides, so
+// there's nothing to seed before the first admin sets one.
+model CommissionRate {
+  id         String          @id @default(auto()) @map("_id") @db.ObjectId
+  sourceType OrderSourceType @unique
+  rate       Float
+  updatedBy  String?         @db.ObjectId
+  updatedAt  DateTime        @updatedAt
+}
