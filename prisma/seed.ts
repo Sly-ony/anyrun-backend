@@ -11,8 +11,6 @@
  *    docs/ADMIN_API.md.
  *
  * Run with: npx prisma db seed
- * (requires `"seed": "tsx prisma/seed.ts"` — or ts-node equivalent — under
- * `"prisma"` in package.json)
  *
  * Configure via env vars before running:
  *   CLEANING_PROVIDER_EMAIL      (required)
@@ -23,10 +21,22 @@
  *   ADMIN_PASSWORD               (required if ADMIN_EMAIL is set)
  *   ADMIN_NAME                   (default: "Platform Admin")
  */
+import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
 import bcrypt from "bcryptjs";
 
-const prisma = new PrismaClient();
+// 1. Establish a native PostgreSQL connection pool using the Direct URL
+const pool = new Pool({ 
+  connectionString: process.env.DIRECT_URL || process.env.DATABASE_URL 
+});
+
+// 2. Instantiate the Prisma adapter wrapper around the pool instance
+const adapter = new PrismaPg(pool);
+
+// 3. Inject the driver adapter directly into the client context options
+const prisma = new PrismaClient({ adapter });
 
 async function seedCleaningProvider() {
   const email = process.env.CLEANING_PROVIDER_EMAIL;
@@ -40,8 +50,12 @@ async function seedCleaningProvider() {
     );
   }
 
+  // PostgreSQL supports the native 'has' filter for scalar/enum lists seamlessly
   const existingActive = await prisma.accountProfile.findMany({
-    where: { roles: { has: "CLEANING_PROVIDER" }, isActive: true },
+    where: { 
+      roles: { has: "CLEANING_PROVIDER" }, 
+      isActive: true 
+    },
   });
 
   if (existingActive.length > 0) {
@@ -72,10 +86,10 @@ async function seedCleaningProvider() {
       businessName,
       isActive: true,
       jobCategoryIds: [],
-      // Regions the cleaning company actually services can be added here or
-      // updated later — left empty so it's an explicit follow-up, not a
-      // guess baked into the seed.
-      serviceRegions: [],
+      // serviceRegions is a relational model, initialized as empty
+      serviceRegions: {
+        create: []
+      },
     },
   });
 
@@ -95,9 +109,6 @@ async function seedAdmin() {
     throw new Error("ADMIN_PASSWORD must be set when ADMIN_EMAIL is provided.");
   }
 
-  // This is always SUPER_ADMIN, never one of the lesser roles — it's the one
-  // account capable of granting EDITOR/SUPPORT/DEVELOPER to others via
-  // POST /api/admin/admins, so it has to start at the top.
   const existingUser = await prisma.user.findUnique({
     where: { email },
     include: { accountProfile: true },
@@ -126,7 +137,9 @@ async function seedAdmin() {
       isActive: true,
       adminRole: "SUPER_ADMIN",
       jobCategoryIds: [],
-      serviceRegions: [],
+      serviceRegions: {
+        create: []
+      },
     },
   });
 
@@ -144,5 +157,8 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
+    // Gracefully close the Prisma Client context
     await prisma.$disconnect();
+    // Gracefully shut down the native database connection pool
+    await pool.end();
   });
