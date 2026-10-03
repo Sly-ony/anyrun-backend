@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { ApiError, handleApiError } from "@/lib/apiError";
+import { asLocationArray } from "@/lib/json";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 // Public: no auth required to look up a business's display info. Deliberately
@@ -12,8 +13,9 @@ interface Params {
 // don't want to publish exact addresses for accounts that haven't opted into
 // that via a catalog listing or an active request.
 export async function GET(_request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
-    const profile = await prisma.accountProfile.findUnique({ where: { id: params.id } });
+    const profile = await prisma.accountProfile.findUnique({ where: { id } });
     if (!profile || !profile.isActive) {
       throw new ApiError(404, "Account not found.");
     }
@@ -28,7 +30,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
         avatarUrl: user.avatarUrl,
         roles: profile.roles,
         businessName: profile.businessName,
-        serviceRegions: profile.serviceRegions.map((r) => ({
+        serviceRegions: asLocationArray(profile.serviceRegions).map((r) => ({
           country: r.country,
           state: r.state,
           city: r.city,

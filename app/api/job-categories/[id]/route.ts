@@ -6,12 +6,13 @@ import { ApiError, handleApiError } from "@/lib/apiError";
 import { updateJobCategorySchema } from "@/lib/validation/jobCategory";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function GET(_request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
-    const category = await prisma.jobCategory.findUnique({ where: { id: params.id } });
+    const category = await prisma.jobCategory.findUnique({ where: { id } });
     if (!category) throw new ApiError(404, "Job category not found.");
     return NextResponse.json({ category });
   } catch (err) {
@@ -20,11 +21,12 @@ export async function GET(_request: NextRequest, { params }: Params) {
 }
 
 export async function PATCH(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
     requireAdminCapability(auth, "MANAGE_JOB_CATEGORIES");
 
-    const category = await prisma.jobCategory.findUnique({ where: { id: params.id } });
+    const category = await prisma.jobCategory.findUnique({ where: { id } });
     if (!category) throw new ApiError(404, "Job category not found.");
 
     const body = await request.json().catch(() => {
@@ -37,7 +39,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       if (clash) throw new ApiError(409, "A job category with this name already exists.");
     }
 
-    const updated = await prisma.jobCategory.update({ where: { id: params.id }, data });
+    const updated = await prisma.jobCategory.update({ where: { id }, data });
     return NextResponse.json({ category: updated });
   } catch (err) {
     return handleApiError(err);

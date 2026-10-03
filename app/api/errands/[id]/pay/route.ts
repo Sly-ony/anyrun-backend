@@ -6,7 +6,7 @@ import { ApiError, handleApiError } from "@/lib/apiError";
 import { createAndChargeOrder } from "@/lib/orderService";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 // The errand model has no single "agreed price" field — customer and runner
@@ -17,10 +17,11 @@ const paySchema = z.object({
 });
 
 export async function POST(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const errand = await prisma.errandRequest.findUnique({ where: { id: params.id } });
+    const errand = await prisma.errandRequest.findUnique({ where: { id } });
     if (!errand) throw new ApiError(404, "Errand request not found.");
 
     if (errand.customerId !== auth.accountProfileId) {

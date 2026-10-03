@@ -5,13 +5,14 @@ import { ApiError, handleApiError } from "@/lib/apiError";
 import { updateErrandSchema } from "@/lib/validation/errand";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function GET(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     await requireAuth(request); // any authenticated account may view a single errand's detail
-    const errand = await prisma.errandRequest.findUnique({ where: { id: params.id } });
+    const errand = await prisma.errandRequest.findUnique({ where: { id } });
     if (!errand) throw new ApiError(404, "Errand request not found.");
     return NextResponse.json({ errand });
   } catch (err) {
@@ -20,10 +21,11 @@ export async function GET(request: NextRequest, { params }: Params) {
 }
 
 export async function PATCH(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const errand = await prisma.errandRequest.findUnique({ where: { id: params.id } });
+    const errand = await prisma.errandRequest.findUnique({ where: { id } });
     if (!errand) throw new ApiError(404, "Errand request not found.");
 
     if (errand.customerId !== auth.accountProfileId) {
@@ -39,7 +41,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     const data = updateErrandSchema.parse(body);
 
     const updated = await prisma.errandRequest.update({
-      where: { id: params.id },
+      where: { id },
       data,
     });
 
@@ -52,10 +54,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 // Soft-cancel rather than a hard delete, so completed/in-flight history and
 // any linked Order/DeliveryJob remain intact and auditable.
 export async function DELETE(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const errand = await prisma.errandRequest.findUnique({ where: { id: params.id } });
+    const errand = await prisma.errandRequest.findUnique({ where: { id } });
     if (!errand) throw new ApiError(404, "Errand request not found.");
 
     if (errand.customerId !== auth.accountProfileId) {
@@ -69,7 +72,7 @@ export async function DELETE(request: NextRequest, { params }: Params) {
     }
 
     const updated = await prisma.errandRequest.update({
-      where: { id: params.id },
+      where: { id },
       data: { status: "CANCELLED" },
     });
 

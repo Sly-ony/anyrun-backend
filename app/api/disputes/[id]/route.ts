@@ -5,14 +5,15 @@ import { hasCapability } from "@/lib/adminPermissions";
 import { ApiError, handleApiError } from "@/lib/apiError";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function GET(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const dispute = await prisma.dispute.findUnique({ where: { id: params.id } });
+    const dispute = await prisma.dispute.findUnique({ where: { id } });
     if (!dispute) throw new ApiError(404, "Dispute not found.");
 
     const isParty =

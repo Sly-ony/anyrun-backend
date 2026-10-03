@@ -1,11 +1,28 @@
 // ============================================================================
-// Anyrun — Prisma Schema (Supabase / PostgreSQL)
+// Anyrun — Prisma Schema (PostgreSQL / Supabase)
 // ============================================================================
-// Notes on modeling choices (Updated for PostgreSQL):
-// - Shifted identity identifiers to UUID to cleanly interoperate with Supabase Auth.
-// - MongoDB composite types (`Location`, `RFQLineItem`, `QuotationLineItem`) 
-//   have been converted into relational models, as PostgreSQL handles relationships natively.
-// - `AccountProfile.roles` remains an array since PostgreSQL supports scalar enum arrays natively.
+// Migrated from MongoDB. Notes on what changed and why:
+// - All ids are `@default(cuid())` strings now, not Mongo ObjectIds. No
+//   `@map("_id")`/`@db.ObjectId` — those were Mongo-only attributes.
+// - `datasource.url` is Supabase's pooled (pgbouncer, port 6543) connection
+//   string, used at runtime; `directUrl` is the direct (port 5432) one,
+//   used only for migrations — pgbouncer in transaction mode can't run DDL.
+// - Postgres has no Prisma "composite types" (that was Mongo-only). Every
+//   field that used to be a `Location`/`RFQLineItem`/`QuotationLineItem`
+//   embed is now a `Json` column holding the same shape — see
+//   lib/validation/shared.ts for the `Location` TS type, and
+//   lib/validation/rfq.ts / quotation.ts for the line-item shapes. This
+//   means Prisma Client reads these fields back as untyped `JsonValue`, not
+//   the nice embedded-object type Mongo gave us — calling code casts them;
+//   see lib/json.ts.
+// - Region-matching queries (e.g. "errands in this runner's state") used to
+//   use Mongo's composite `{ is: { state: ... } }` filter; Postgres/Prisma
+//   instead filters Json columns with `{ path: ["state"], equals: ... }` —
+//   see lib/region.ts.
+// - Still true post-migration: AccountProfile.roles is an array so a user
+//   can hold multiple roles at once; Payment is a generic ledger entry
+//   pointing at exactly one of Order/DeliveryJob/CleaningBooking, enforced
+//   in app logic since Postgres has no native polymorphic relation either.
 // ============================================================================
 
 generator client {
@@ -14,8 +31,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  // Note: For Prisma v7+, do not add your database 'url' here. 
-  // Keep it in your `prisma.config.ts` for migration tasks.
 }
 
 // ----------------------------------------------------------------------------
@@ -27,24 +42,31 @@ enum AccountType {
   RUNNER
   BUSINESS_BUYER
   BUSINESS_SUPPLIER
-  CLEANING_PROVIDER
+  CLEANING_PROVIDER // admin-designated, singleton — enforced at application layer
 }
 
+// Derived automatically from an account's roles at sign-up (BUSINESS if any
+// of BUSINESS_BUYER/BUSINESS_SUPPLIER is selected, INDIVIDUAL otherwise) —
+// not a separate question the client has to ask. Drives whether business
+// verification is required before the account can transact as a business.
 enum AccountKind {
   INDIVIDUAL
   BUSINESS
 }
 
+// Orthogonal to marketplace `roles` (AccountType) — an account can be, say,
+// an INDIVIDUAL_CUSTOMER *and* a DEVELOPER admin at the same time. Null means
+// "not an admin at all". Permission matrix lives in lib/adminPermissions.ts.
 enum AdminRole {
-  SUPER_ADMIN
-  EDITOR
-  SUPPORT
-  DEVELOPER
+  SUPER_ADMIN // full access, including admin management and commission rates
+  EDITOR // blog + advert content only
+  SUPPORT // user visibility/suspension + disputes only
+  DEVELOPER // everything SUPER_ADMIN can do EXCEPT admin management and commission rate edits
 }
 
 enum VerificationType {
-  BUSINESS
-  JOB_CATEGORY
+  BUSINESS // proves the account is a legitimate business
+  JOB_CATEGORY // proves eligibility to do a specific kind of job (see JobCategory)
 }
 
 enum VerificationStatus {
@@ -121,6 +143,8 @@ enum NotificationType {
   VERIFICATION_UPDATE
   DISPUTE_UPDATE
   ACCOUNT_SUSPENDED
+  DEPOSIT_UPDATE
+  WITHDRAWAL_UPDATE
   GENERAL
 }
 
@@ -131,58 +155,14 @@ enum PaymentSourceType {
 }
 
 // ----------------------------------------------------------------------------
-// Relational Models (Converted from MongoDB Embedded Types)
-// ----------------------------------------------------------------------------
-
-model Location {
-  id               String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  country          String
-  state            String
-  city             String
-  area             String?
-  postalCode       String?
-  latitude         Float?
-  longitude        Float?
-  
-  // Relationship back to AccountProfile (since it represents service regions)
-  accountProfileId String?         @db.Uuid
-  accountProfile   AccountProfile? @relation(fields: [accountProfileId], references: [id])
-}
-
-model RFQLineItem {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  itemId      String   // client-generated id to let quotations reference this line
-  name        String
-  quantity    Int
-  notes       String?
-  
-  // This model will need a relation setup to your main RFQ model later, e.g.:
-  // rfqId    String   @db.Uuid
-  // rfq      RFQ      @relation(fields: [rfqId], references: [id])
-}
-
-model QuotationLineItem {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  rfqItemId   String?  // References RFQLineItem.itemId when quoting per line
-  name        String
-  price       Float
-  notes       String?
-  available   Boolean  @default(true)
-
-  // This model will need a relation setup to your main Quotation model later, e.g.:
-  // quotationId String   @db.Uuid
-  // quotation   Quotation @relation(fields: [quotationId], references: [id])
-}
-
-// ----------------------------------------------------------------------------
-// Core Identity
+// Core identity
 // ----------------------------------------------------------------------------
 
 model User {
-  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id            String   @id @default(cuid())
   email         String   @unique
   phone         String?  @unique
-  passwordHash  String? 
+  passwordHash  String? // null when the user authenticates via OAuth only
   oauthProvider String?
   oauthId       String?
   name          String
@@ -194,22 +174,22 @@ model User {
 }
 
 model AccountProfile {
-  id               String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId           String        @unique @db.Uuid
+  id               String        @id @default(cuid())
+  userId           String        @unique
   user             User          @relation(fields: [userId], references: [id])
   roles            AccountType[]
-  accountKind      AccountKind   
-  businessName     String? 
-  serviceRegions   Location[]    // 1-to-many relationship instead of array of objects
-  isActive         Boolean       @default(true) 
-  adminRole        AdminRole? 
-  
-  // Array of primitive strings (UUIDs) representing checked job categories
-  jobCategoryIds   String[]      
-  
-  suspensionReason String? 
+  accountKind      AccountKind // derived from roles at sign-up — see the enum comment
+  businessName     String? // used when roles includes BUSINESS_BUYER / BUSINESS_SUPPLIER
+  serviceRegions   Json          @default("[]") // Location[] shape, see lib/validation/shared.ts — regions this runner/supplier actively serves
+  isActive         Boolean       @default(true) // false = suspended (see suspension fields) or the CLEANING_PROVIDER singleton gate
+  adminRole        AdminRole? // null = not an admin. First one is bootstrapped via prisma/seed.ts; SUPER_ADMIN grants the rest via POST /api/admin/admins
+  // Job categories this RUNNER has opted into working. Any category with
+  // JobCategory.requiresVerification = true also needs an APPROVED
+  // Verification (type JOB_CATEGORY) before an errand in it can be accepted.
+  jobCategoryIds   String[]
+  suspensionReason String? // set by a SUPPORT/DEVELOPER/SUPER_ADMIN admin
   suspendedAt      DateTime?
-  suspendedBy      String?       @db.Uuid 
+  suspendedBy      String? // the admin's AccountProfile.id
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
@@ -218,13 +198,13 @@ model AccountProfile {
   errandRequestsAccepted ErrandRequest[] @relation("ErrandRunner")
 
   // RFQ / procurement flow
-  rfqsPosted          RFQ[]        @relation("RFQBuyer")
-  quotationsSubmitted Quotation[]  @relation("QuotationSupplier")
+  rfqsPosted          RFQ[]       @relation("RFQBuyer")
+  quotationsSubmitted Quotation[] @relation("QuotationSupplier")
 
   // Catalog
   catalogItems CatalogItem[] @relation("CatalogSupplier")
 
-  // Cleaning
+  // Cleaning (as customer, or as the single reserved provider)
   cleaningBookingsAsCustomer CleaningBooking[] @relation("CleaningCustomer")
   cleaningBookingsAsProvider CleaningBooking[] @relation("CleaningProvider")
 
@@ -232,86 +212,450 @@ model AccountProfile {
   ordersAsPayer OrderTx[] @relation("OrderPayer")
   ordersAsPayee OrderTx[] @relation("OrderPayee")
 
-  // Delivery
+  // Delivery jobs run by the founder's own logistics accounts
   deliveryJobsAssigned DeliveryJob[] @relation("DeliveryAssignee")
 
   notifications Notification[] @relation("NotificationRecipient")
 
-  // Verifications
+  // Business / job-category verification submissions
   verifications Verification[] @relation("AccountVerifications")
+
+  // Wallet: a running balance funded by deposits (top-ups via Paystack/
+  // Flutterwave) and by earnings auto-credited when an Order/DeliveryJob/
+  // CleaningBooking payment succeeds (see lib/wallet.ts). Withdrawals debit
+  // it out to a saved PayoutMethod. NOT currently spendable at checkout —
+  // errand/RFQ/catalog/cleaning payments still go through the existing mock
+  // provider directly; see docs/USER_API.md's Wallet section for that gap.
+  walletBalance      Float               @default(0)
+  payoutMethods      PayoutMethod[]
+  deposits           Deposit[]
+  withdrawals        Withdrawal[]
+  walletTransactions WalletTransaction[]
 }
 
 // ----------------------------------------------------------------------------
 // Job categories + verification
 // ----------------------------------------------------------------------------
 
+// The managed list of job types a RUNNER can pick from when choosing what
+// work they want to do. `requiresVerification` is the column the founder
+// flagged: some categories (e.g. anything involving valuables, vulnerable
+// people, or specialist skills) require proof before a runner can accept
+// jobs in them; others don't. Deliberately its own collection rather than
+// reusing ErrandRequest.category's free-text field, so this list can be
+// curated and each entry can carry a verification requirement — the two are
+// kept in sync by name (see lib/verificationRules.ts).
 model JobCategory {
-  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id                   String   @id @default(cuid())
   name                 String   @unique
+  description          String?
   requiresVerification Boolean  @default(false)
+  isActive             Boolean  @default(true)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
+
+  verifications Verification[]
+}
+
+// A verification submission: either "prove this account is a real business"
+// or "prove this runner is eligible for this specific job category". One
+// row per submission/resubmission attempt.
+model Verification {
+  id               String             @id @default(cuid())
+  accountProfileId String
+  accountProfile   AccountProfile     @relation("AccountVerifications", fields: [accountProfileId], references: [id])
+  type             VerificationType
+  jobCategoryId    String? // set when type = JOB_CATEGORY
+  jobCategory      JobCategory?       @relation(fields: [jobCategoryId], references: [id])
+  status           VerificationStatus @default(PENDING)
+  documents        String[] // URLs to uploaded ID/proof-of-business/certification documents
+  notes            String? // submitter's own notes, if any
+  rejectionReason  String?
+  reviewedBy       String? // reviewing admin's AccountProfile.id
+  submittedAt      DateTime           @default(now())
+  reviewedAt       DateTime?
 }
 
 // ----------------------------------------------------------------------------
-// Placeholder Stubs for missing references (To ensure compilation safety)
+// A. Errand / go-get-this-for-me flow
 // ----------------------------------------------------------------------------
+
 model ErrandRequest {
-  id          String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  customerId  String         @db.Uuid
-  customer    AccountProfile @relation("ErrandCustomer", fields: [customerId], references: [id])
-  runnerId    String?        @db.Uuid
+  id          String          @id @default(cuid())
+  customerId  String
+  customer    AccountProfile  @relation("ErrandCustomer", fields: [customerId], references: [id])
+  description String
+  category    String
+  location    Json // Location shape — see lib/validation/shared.ts
+  budget      Float?
+  photos      String[]
+  deadline    DateTime?
+  status      ErrandStatus    @default(OPEN)
+  runnerId    String?
   runner      AccountProfile? @relation("ErrandRunner", fields: [runnerId], references: [id])
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  order       OrderTx?
+  deliveryJob DeliveryJob?
 }
+
+// ----------------------------------------------------------------------------
+// B. B2B procurement / quotation flow
+// ----------------------------------------------------------------------------
 
 model RFQ {
-  id      String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  buyerId String         @db.Uuid
-  buyer   AccountProfile @relation("RFQBuyer", fields: [buyerId], references: [id])
+  id                 String         @id @default(cuid())
+  buyerId            String
+  buyer              AccountProfile @relation("RFQBuyer", fields: [buyerId], references: [id])
+  title              String?
+  lineItems          Json           @default("[]") // RFQLineItem[] shape
+  region             Json // Location shape
+  deadline           DateTime?
+  status             RFQStatus      @default(OPEN)
+  awardedQuotationId String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  quotations Quotation[]
 }
 
 model Quotation {
-  id         String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  supplierId String         @db.Uuid
-  supplier   AccountProfile @relation("QuotationSupplier", fields: [supplierId], references: [id])
+  id         String          @id @default(cuid())
+  rfqId      String
+  rfq        RFQ             @relation(fields: [rfqId], references: [id])
+  supplierId String
+  supplier   AccountProfile  @relation("QuotationSupplier", fields: [supplierId], references: [id])
+  lineItems  Json            @default("[]") // QuotationLineItem[] shape
+  totalPrice Float?
+  notes      String?
+  status     QuotationStatus @default(SUBMITTED)
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  order OrderTx?
 }
+
+// ----------------------------------------------------------------------------
+// C. Supplier catalog / marketplace browse flow
+// ----------------------------------------------------------------------------
 
 model CatalogItem {
-  id         String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  supplierId String         @db.Uuid
-  supplier   AccountProfile @relation("CatalogSupplier", fields: [supplierId], references: [id])
+  id          String         @id @default(cuid())
+  supplierId  String
+  supplier    AccountProfile @relation("CatalogSupplier", fields: [supplierId], references: [id])
+  title       String
+  description String?
+  category    String
+  price       Float
+  currency    String         @default("GBP")
+  photos      String[]
+  region      Json // Location shape
+  isAvailable Boolean        @default(true)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  orders OrderTx[]
 }
+
+// ----------------------------------------------------------------------------
+// D. Cleaning / facility management (exclusive vertical)
+// ----------------------------------------------------------------------------
 
 model CleaningBooking {
-  id         String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  customerId String         @db.Uuid
-  customer   AccountProfile @relation("CleaningCustomer", fields: [customerId], references: [id])
-  providerId String         @db.Uuid
-  provider   AccountProfile @relation("CleaningProvider", fields: [providerId], references: [id])
+  id            String                @id @default(cuid())
+  customerId    String
+  customer      AccountProfile        @relation("CleaningCustomer", fields: [customerId], references: [id])
+  providerId    String // must resolve to the single active CLEANING_PROVIDER profile
+  provider      AccountProfile        @relation("CleaningProvider", fields: [providerId], references: [id])
+  serviceScope  CleaningServiceScope
+  address       Json // Location shape
+  scheduledDate DateTime
+  notes         String?
+  price         Float?
+  status        CleaningBookingStatus @default(PENDING)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  order   OrderTx?
+  Payment Payment?
 }
 
+// ----------------------------------------------------------------------------
+// Money: orders, delivery, payments
+// ----------------------------------------------------------------------------
+
+// Named OrderTx (not "Order") to avoid clashing with reserved/likely-taken names
+// in generated clients; represents the doc's "Order / Transaction" entity.
 model OrderTx {
-  id      String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  payerId String         @db.Uuid
-  payer   AccountProfile @relation("OrderPayer", fields: [payerId], references: [id])
-  payeeId String         @db.Uuid
-  payee   AccountProfile @relation("OrderPayee", fields: [payeeId], references: [id])
+  id         String          @id @default(cuid())
+  sourceType OrderSourceType
+
+  // Exactly one of these should be set, matching sourceType.
+  sourceErrandId          String?          @unique
+  sourceErrand            ErrandRequest?   @relation(fields: [sourceErrandId], references: [id])
+  sourceQuotationId       String?          @unique
+  sourceQuotation         Quotation?       @relation(fields: [sourceQuotationId], references: [id])
+  sourceCatalogItemId     String?
+  sourceCatalogItem       CatalogItem?     @relation(fields: [sourceCatalogItemId], references: [id])
+  sourceCleaningBookingId String?          @unique
+  sourceCleaningBooking   CleaningBooking? @relation(fields: [sourceCleaningBookingId], references: [id])
+
+  amount           Float // gross amount paid by the payer
+  commissionRate   Float // e.g. 0.1 for 10% — sourced from a settings/config table, not hardcoded
+  commissionAmount Float // amount - commissionAmount = payout to payee
+  payerId          String
+  payer            AccountProfile @relation("OrderPayer", fields: [payerId], references: [id])
+  payeeId          String
+  payee            AccountProfile @relation("OrderPayee", fields: [payeeId], references: [id])
+  paymentStatus    PaymentStatus  @default(PENDING)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  payment Payment?
 }
 
+// Separate from OrderTx: pickup + delivery fulfilled by the founder's own
+// logistics company, billed as its own fee distinct from platform commission.
 model DeliveryJob {
-  id         String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  assigneeId String         @db.Uuid
-  assignee   AccountProfile @relation("DeliveryAssignee", fields: [assigneeId], references: [id])
+  id              String          @id @default(cuid())
+  errandRequestId String?         @unique
+  errandRequest   ErrandRequest?  @relation(fields: [errandRequestId], references: [id])
+  relatedOrderId  String? // e.g. links to the RFQ/catalog OrderTx being delivered
+  pickupAddress   Json // Location shape
+  dropoffAddress  Json // Location shape
+  deliveryFee     Float
+  status          DeliveryStatus  @default(REQUESTED)
+  assigneeId      String? // staff/runner from the founder's delivery company
+  assignee        AccountProfile? @relation("DeliveryAssignee", fields: [assigneeId], references: [id])
+  scheduledAt     DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  payment Payment?
 }
+
+// Generic payment ledger entry. Points at exactly one of Order / DeliveryJob /
+// CleaningBooking (enforced in application logic) so all platform-processed
+// money — including the commission split — is auditable in one place.
+model Payment {
+  id         String            @id @default(cuid())
+  sourceType PaymentSourceType
+
+  orderId           String?          @unique
+  order             OrderTx?         @relation(fields: [orderId], references: [id])
+  deliveryJobId     String?          @unique
+  deliveryJob       DeliveryJob?     @relation(fields: [deliveryJobId], references: [id])
+  cleaningBookingId String?          @unique
+  cleaningBooking   CleaningBooking? @relation(fields: [cleaningBookingId], references: [id])
+
+  amount           Float
+  commissionAmount Float? // populated when sourceType is ORDER
+  deliveryFee      Float? // populated when sourceType is DELIVERY_JOB
+  status           PaymentStatus @default(PENDING)
+  provider         String        @default("mock") // swap for real gateway later
+  providerRef      String?
+  paidAt           DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+}
+
+// ----------------------------------------------------------------------------
+// Notifications (region-matched)
+// ----------------------------------------------------------------------------
 
 model Notification {
-  id          String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  recipientId String         @db.Uuid
-  recipient   AccountProfile @relation("NotificationRecipient", fields: [recipientId], references: [id])
+  id              String           @id @default(cuid())
+  recipientId     String
+  recipient       AccountProfile   @relation("NotificationRecipient", fields: [recipientId], references: [id])
+  type            NotificationType
+  title           String
+  message         String
+  relatedErrandId String?
+  relatedRFQId    String?
+  isRead          Boolean          @default(false)
+  createdAt       DateTime         @default(now())
 }
 
-model Verification {
-  id        String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  accountId String         @db.Uuid
-  account   AccountProfile @relation("AccountVerifications", fields: [accountId], references: [id])
+// ----------------------------------------------------------------------------
+// Admin: content (EDITOR), disputes (SUPPORT), commission rates (SUPER_ADMIN)
+// ----------------------------------------------------------------------------
+
+enum BlogPostStatus {
+  DRAFT
+  PUBLISHED
+}
+
+model BlogPost {
+  id            String         @id @default(cuid())
+  title         String
+  slug          String         @unique
+  content       String
+  coverImageUrl String?
+  status        BlogPostStatus @default(DRAFT)
+  authorId      String // the EDITOR/DEVELOPER/SUPER_ADMIN who wrote it
+  publishedAt   DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+}
+
+model AdvertPost {
+  id        String    @id @default(cuid())
+  title     String
+  imageUrl  String
+  linkUrl   String?
+  placement String? // free text, e.g. "home_banner", "catalog_sidebar" — no fixed taxonomy yet
+  startDate DateTime?
+  endDate   DateTime?
+  isActive  Boolean   @default(true)
+  authorId  String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+enum DisputeRelatedType {
+  ERRAND
+  RFQ
+  CATALOG_ORDER
+  CLEANING_BOOKING
+  DELIVERY_JOB
+  OTHER
+}
+
+enum DisputeStatus {
+  OPEN
+  IN_REVIEW
+  RESOLVED
+  DISMISSED
+}
+
+model Dispute {
+  id              String             @id @default(cuid())
+  raisedById      String
+  againstId       String? // the other party, if there is one
+  relatedType     DisputeRelatedType
+  relatedId       String? // loose reference — id of the Order/ErrandRequest/etc., not an enforced relation
+  subject         String
+  description     String
+  status          DisputeStatus      @default(OPEN)
+  assignedToId    String? // a SUPPORT/DEVELOPER/SUPER_ADMIN admin
+  resolutionNotes String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  resolvedAt      DateTime?
+}
+
+// One row per OrderSourceType. A missing row means "use the env var default"
+// (see lib/commission.ts) — this table only holds explicit overrides, so
+// there's nothing to seed before the first admin sets one.
+model CommissionRate {
+  id         String          @id @default(cuid())
+  sourceType OrderSourceType @unique
+  rate       Float
+  updatedBy  String?
+  updatedAt  DateTime        @updatedAt
+}
+
+// ----------------------------------------------------------------------------
+// Wallet: deposits, withdrawals, payout methods (Paystack + Flutterwave)
+// ----------------------------------------------------------------------------
+
+enum PaymentGateway {
+  PAYSTACK
+  FLUTTERWAVE
+}
+
+enum DepositStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+enum WithdrawalStatus {
+  PENDING // created, transfer request not yet confirmed accepted by the gateway
+  PROCESSING // gateway accepted the transfer request; awaiting its webhook
+  COMPLETED
+  FAILED
+}
+
+enum WalletTransactionType {
+  DEPOSIT // credit, from a completed Deposit
+  EARNING // credit, auto-applied when an Order/DeliveryJob/CleaningBooking payment succeeds
+  WITHDRAWAL // debit, when a Withdrawal is first created (reserved immediately, not on completion)
+  WITHDRAWAL_REVERSAL // credit, when a PROCESSING/PENDING Withdrawal ends up FAILED and funds are returned
+}
+
+// A saved payout destination. Creating one immediately registers a transfer
+// recipient with the chosen gateway (Paystack's /transferrecipient or
+// Flutterwave's beneficiary equivalent) so withdrawal time is just "transfer
+// to this already-known recipient", not a two-step process per withdrawal.
+model PayoutMethod {
+  id                    String         @id @default(cuid())
+  accountProfileId      String
+  accountProfile        AccountProfile @relation(fields: [accountProfileId], references: [id])
+  provider              PaymentGateway
+  accountName           String
+  accountNumber         String
+  bankCode              String
+  bankName              String
+  currency              String         @default("GBP")
+  isDefault             Boolean        @default(false)
+  providerRecipientCode String? // Paystack's recipient_code / Flutterwave's equivalent, cached at creation
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  withdrawals Withdrawal[]
+}
+
+model Deposit {
+  id                String         @id @default(cuid())
+  accountProfileId  String
+  accountProfile    AccountProfile @relation(fields: [accountProfileId], references: [id])
+  provider          PaymentGateway
+  amount            Float
+  currency          String         @default("GBP")
+  status            DepositStatus  @default(PENDING)
+  reference         String         @unique // our tx_ref, sent to the gateway and echoed back on its webhook
+  providerReference String? // the gateway's own transaction id, once known
+  checkoutUrl       String? // the hosted payment page link returned at initialization
+  paidAt            DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+}
+
+model Withdrawal {
+  id                 String           @id @default(cuid())
+  accountProfileId   String
+  accountProfile     AccountProfile   @relation(fields: [accountProfileId], references: [id])
+  provider           PaymentGateway
+  payoutMethodId     String
+  payoutMethod       PayoutMethod     @relation(fields: [payoutMethodId], references: [id])
+  amount             Float
+  currency           String           @default("GBP")
+  status             WithdrawalStatus @default(PENDING)
+  reference          String           @unique
+  providerTransferId String?
+  failureReason      String?
+  processedAt        DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+}
+
+// The wallet ledger — every balance change, in or out, with a snapshot of
+// the resulting balance for audit. AccountProfile.walletBalance is the
+// current total; this is how you reconstruct how it got there.
+model WalletTransaction {
+  id                       String                @id @default(cuid())
+  accountProfileId         String
+  accountProfile           AccountProfile        @relation(fields: [accountProfileId], references: [id])
+  type                     WalletTransactionType
+  amount                   Float // always positive; `type` determines credit vs debit
+  balanceAfter             Float
+  description              String
+  relatedDepositId         String?
+  relatedWithdrawalId      String?
+  relatedOrderId           String?
+  relatedDeliveryJobId     String?
+  relatedCleaningBookingId String?
+  createdAt                DateTime              @default(now())
 }

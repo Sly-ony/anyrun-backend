@@ -1,10 +1,12 @@
 import type { RegionLike } from "./validation/shared";
 
 /**
- * Builds a Prisma `OR` filter that matches a composite `Location` field
- * against ANY of the given regions (by state + city — we deliberately don't
- * match on `area` or coordinates, which are too granular for "is this runner
- * in scope for this request" matching).
+ * Builds a Prisma `OR` filter that matches a single-object Json `Location`
+ * field (e.g. ErrandRequest.location, RFQ.region, CatalogItem.region)
+ * against ANY of the given regions, by state + city. Uses Postgres/Prisma's
+ * Json path filtering, which works here because the target field holds one
+ * JSON object, not an array — see `matchesAnyState` below for why the
+ * array case (AccountProfile.serviceRegions) needs a different approach.
  *
  * Usage:
  *   const clauses = [{ status: "OPEN" }];
@@ -14,25 +16,34 @@ import type { RegionLike } from "./validation/shared";
 export function anyRegionMatch(field: string, regions: RegionLike[]) {
   return {
     OR: regions.map((r) => ({
-      [field]: { is: { state: r.state, city: r.city } },
+      AND: [
+        { [field]: { path: ["state"], equals: r.state } },
+        { [field]: { path: ["city"], equals: r.city } },
+      ],
     })),
   };
 }
 
 /**
- * State-only match, deliberately coarser than anyRegionMatch. Used for
- * notification fan-out: a runner/supplier registered anywhere in a state
- * should hear about a new opportunity anywhere in that state, even if the
- * city spelling/subdivision doesn't line up exactly. Browse/search stays on
- * the tighter state+city match above.
+ * In-memory check: does ANY entry in this account's serviceRegions array
+ * (a Json array of Location objects) have a state in the given list?
  *
- * "State" here means whatever a country's top-level administrative region
- * is called in the Location.state field — e.g. a county or region in the UK
- * (this business's home market), Edo State in Nigeria, etc. Not every
- * country calls it a "state", but the field is used the same way regardless
- * of the term a given country uses.
+ * This used to be a DB-level filter under MongoDB, where composite-type
+ * *lists* support a `some`-style match the same way relation lists do.
+ * Postgres Json columns have no equivalent — Prisma's Json path filtering
+ * extracts a path from a single JSON document, it doesn't iterate "does any
+ * array element match". So region-matched notification fan-out now fetches
+ * candidate accounts by role+isActive only (see lib/notificationService.ts)
+ * and filters by this function in application code instead. Fine at the
+ * scale this matters (number of active runners/suppliers, not number of
+ * errands), but worth knowing if that scale assumption ever changes — at
+ * that point this would want a proper join table instead of a Json array.
+ *
+ * "State" here means whatever a country calls its top-level administrative
+ * region (a UK county/region, a Nigerian state, etc.) — the field name is
+ * generic.
  */
-export function anyStateMatch(field: string, regions: RegionLike[]) {
-  const states = Array.from(new Set(regions.map((r) => r.state)));
-  return { [field]: { is: { state: { in: states } } } };
+export function matchesAnyState(accountRegions: RegionLike[], states: string[]): boolean {
+  const stateSet = new Set(states);
+  return accountRegions.some((r) => stateSet.has(r.state));
 }

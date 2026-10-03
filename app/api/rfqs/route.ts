@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
           itemId: randomUUID(),
           name: item.name,
           quantity: item.quantity,
-          notes: item.notes,
+          notes: item.notes ?? null,
         })),
         region: data.region,
         deadline: data.deadline,

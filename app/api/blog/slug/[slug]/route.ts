@@ -3,12 +3,13 @@ import prisma from "@/lib/prisma";
 import { ApiError, handleApiError } from "@/lib/apiError";
 
 interface Params {
-  params: { slug: string };
+  params: Promise<{ slug: string }>;
 }
 
 export async function GET(_request: NextRequest, { params }: Params) {
+  const { slug } = await params;
   try {
-    const post = await prisma.blogPost.findUnique({ where: { slug: params.slug } });
+    const post = await prisma.blogPost.findUnique({ where: { slug } });
     if (!post || post.status !== "PUBLISHED") {
       throw new ApiError(404, "Blog post not found.");
     }

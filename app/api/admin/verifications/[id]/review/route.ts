@@ -7,15 +7,16 @@ import { reviewVerificationSchema } from "@/lib/validation/verification";
 import { notifyVerificationReviewed } from "@/lib/notificationService";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function POST(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
     requireAdminCapability(auth, "MANAGE_VERIFICATIONS");
 
-    const verification = await prisma.verification.findUnique({ where: { id: params.id } });
+    const verification = await prisma.verification.findUnique({ where: { id } });
     if (!verification) throw new ApiError(404, "Verification not found.");
     if (verification.status !== "PENDING") {
       throw new ApiError(409, "Only a PENDING verification can be reviewed.");
@@ -27,7 +28,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     const { decision, rejectionReason } = reviewVerificationSchema.parse(body);
 
     const updated = await prisma.verification.update({
-      where: { id: params.id },
+      where: { id },
       data: {
         status: decision,
         rejectionReason: decision === "REJECTED" ? rejectionReason : null,

@@ -7,7 +7,7 @@ import { resolveDeliveryRequesterId } from "@/lib/deliveryAuth";
 import { notifyDeliveryUpdate } from "@/lib/notificationService";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 // NOTE: until there's a proper dispatch/admin system for the founder's own
@@ -15,11 +15,12 @@ interface Params {
 // job — same pattern as errand acceptance. Worth revisiting once delivery
 // staff become their own concept distinct from marketplace runners.
 export async function POST(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
     requireRole(auth, [RUNNER_ROLE]);
 
-    const job = await prisma.deliveryJob.findUnique({ where: { id: params.id } });
+    const job = await prisma.deliveryJob.findUnique({ where: { id } });
     if (!job) throw new ApiError(404, "Delivery job not found.");
     if (job.status !== "REQUESTED") {
       throw new ApiError(409, "This delivery job is no longer available for assignment.");
@@ -29,14 +30,14 @@ export async function POST(request: NextRequest, { params }: Params) {
     }
 
     const result = await prisma.deliveryJob.updateMany({
-      where: { id: params.id, status: "REQUESTED", assigneeId: null },
+      where: { id, status: "REQUESTED", assigneeId: null },
       data: { status: "ASSIGNED", assigneeId: auth.accountProfileId },
     });
     if (result.count === 0) {
       throw new ApiError(409, "This delivery job was just assigned to someone else.");
     }
 
-    const updated = await prisma.deliveryJob.findUnique({ where: { id: params.id } });
+    const updated = await prisma.deliveryJob.findUnique({ where: { id } });
     if (updated) {
       try {
         const requesterId = await resolveDeliveryRequesterId(updated);

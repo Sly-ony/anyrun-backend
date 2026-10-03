@@ -58,13 +58,15 @@ export async function createAndChargeOrder(params: CreateOrderParams) {
   });
 
   const finalStatus = chargeResult.success ? "PAID" : "FAILED";
+  const netPayout = Math.round((params.amount - commissionAmount) * 100) / 100;
 
-  const [updatedOrder, payment] = await prisma.$transaction([
-    prisma.orderTx.update({
+  const { updatedOrder, payment } = await prisma.$transaction(async (tx) => {
+    const updatedOrder = await tx.orderTx.update({
       where: { id: order.id },
       data: { paymentStatus: finalStatus },
-    }),
-    prisma.payment.create({
+    });
+
+    const payment = await tx.payment.create({
       data: {
         sourceType: "ORDER",
         orderId: order.id,
@@ -75,8 +77,32 @@ export async function createAndChargeOrder(params: CreateOrderParams) {
         providerRef: chargeResult.providerRef,
         paidAt: chargeResult.success ? new Date() : null,
       },
-    }),
-  ]);
+    });
+
+    // Earnings land in the payee's wallet automatically — net of commission
+    // — so a runner/supplier/cleaning provider has something to withdraw
+    // without ever having to make a separate deposit themselves. Done inside
+    // the same transaction as the order/payment write so a PAID order can
+    // never exist without the matching wallet credit, or vice versa.
+    if (chargeResult.success) {
+      const payeeProfile = await tx.accountProfile.update({
+        where: { id: params.payeeId },
+        data: { walletBalance: { increment: netPayout } },
+      });
+      await tx.walletTransaction.create({
+        data: {
+          accountProfileId: params.payeeId,
+          type: "EARNING",
+          amount: netPayout,
+          balanceAfter: payeeProfile.walletBalance,
+          description: params.description,
+          relatedOrderId: order.id,
+        },
+      });
+    }
+
+    return { updatedOrder, payment };
+  });
 
   if (!chargeResult.success) {
     throw new ApiError(

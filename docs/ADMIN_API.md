@@ -46,8 +46,10 @@ page size 20, max 100), response shape:
 { "items": [ /* ... */ ], "page": 1, "pageSize": 20, "total": 42 }
 ```
 
-**IDs** below are illustrative 24-character Mongo ObjectId strings, e.g.
-`"65f1a2b3c4d5e6f7a8b9c0d1"`. All dates are ISO-8601 strings.
+**IDs** are Postgres `cuid()` strings, not Mongo ObjectIds — the example ids
+below (`"65f1a2b3c4d5e6f7a8b9c0d1"` etc.) are illustrative placeholders
+only, left as 24-char hex strings for readability; real ids won't look
+exactly like that. All dates are ISO-8601 strings.
 
 **The `AccountProfile` shape**, returned in full by several endpoints below:
 ```json
@@ -1007,12 +1009,14 @@ endpoint, worded differently for a terminal vs. non-terminal status change.
 
 ---
 
-## 8. Platform data — errands, orders, revenue — `/api/admin/errands`, `/api/admin/orders`, `/api/admin/revenue`
+## 8. Platform data — errands, orders, revenue, deposits, withdrawals
 
-Capability: **`VIEW_PLATFORM_DATA`** (`SUPER_ADMIN`, `DEVELOPER`, `SUPPORT`
-— `SUPPORT` has it specifically so resolving a dispute doesn't dead-end at
-an id it can't look up). Read-only — there's no `MANAGE_` counterpart yet
-(see "Remaining known gaps" below).
+Covers `/api/admin/errands`, `/api/admin/orders`, `/api/admin/revenue`,
+`/api/admin/deposits`, `/api/admin/withdrawals`. Capability:
+**`VIEW_PLATFORM_DATA`** (`SUPER_ADMIN`, `DEVELOPER`, `SUPPORT` — `SUPPORT`
+has it specifically so resolving a dispute doesn't dead-end at an id it
+can't look up). Read-only — there's no `MANAGE_` counterpart yet (see
+"Remaining known gaps" below).
 
 ### `GET /api/admin/errands`
 
@@ -1152,8 +1156,62 @@ payee's actual take-home for that bucket is `grossAmount - commissionAmount`.
 
 ---
 
+### `GET /api/admin/deposits`
+
+Platform-wide deposit list. Query params (all optional): `status`
+(`PENDING`/`COMPLETED`/`FAILED`), `provider` (`PAYSTACK`/`FLUTTERWAVE`),
+`accountProfileId`, `page`, `pageSize`. No request body.
+
+**Response — `200`:**
+```json
+{
+  "items": [
+    { "id": "65f1a2b3c4d5e6f7a8b9d200", "accountProfileId": "65f1a2b3c4d5e6f7a8b9c0d1", "provider": "FLUTTERWAVE", "amount": 50.0, "currency": "GBP", "status": "COMPLETED", "reference": "dep_3f2a1c9e-...", "providerReference": "7654321", "checkoutUrl": "https://checkout.flutterwave.com/...", "paidAt": "2026-10-02T09:12:00.000Z", "createdAt": "2026-10-02T09:10:00.000Z", "updatedAt": "2026-10-02T09:12:00.000Z" }
+  ],
+  "page": 1, "pageSize": 20, "total": 1
+}
+```
+
+**Errors:** `401` · `403`.
+
+---
+
+### `GET /api/admin/withdrawals`
+
+Platform-wide withdrawal list. Same query params as deposits, with `status`
+one of `PENDING`/`PROCESSING`/`COMPLETED`/`FAILED`. No request body.
+
+**Response — `200`:**
+```json
+{
+  "items": [
+    { "id": "65f1a2b3c4d5e6f7a8b9d300", "accountProfileId": "65f1a2b3c4d5e6f7a8b9c0d1", "provider": "PAYSTACK", "payoutMethodId": "65f1a2b3c4d5e6f7a8b9d000", "amount": 100.0, "currency": "GBP", "status": "PROCESSING", "reference": "wd_7c4e2a1b-...", "providerTransferId": "TRF_abc123", "failureReason": null, "processedAt": null, "createdAt": "2026-10-02T09:20:00.000Z", "updatedAt": "2026-10-02T09:20:00.000Z" }
+  ],
+  "page": 1, "pageSize": 20, "total": 1
+}
+```
+
+**Errors:** `401` · `403`.
+
+*(There is deliberately no admin write endpoint here — e.g. to manually
+force a stuck withdrawal to `COMPLETED`/`FAILED`. See "Remaining known
+gaps" below.)*
+
+---
+
 ## Remaining known gaps
 
+- **No admin write access over deposits/withdrawals** — `GET /api/admin/deposits`
+  and `/withdrawals` are read-only (section 8). If a gateway's webhook never
+  arrives (and the user never happens to poll `GET /api/wallet/deposits/{id}`,
+  which also re-verifies), a deposit/withdrawal can sit `PENDING`/`PROCESSING`
+  indefinitely with no admin action to force-resolve it — manual DB
+  intervention would be required today.
+- **Paystack's GBP/UK support is unconfirmed** — its documented settlement
+  currencies are NGN/GHS/ZAR/KES. If your merchant account isn't approved
+  for GBP, every Paystack deposit/withdrawal for this business will fail at
+  the gateway. See `lib/payments/paystack.ts` for the full caveat; confirm
+  directly with Paystack before relying on it in production.
 - **No admin visibility into `DeliveryJob` or `CleaningBooking` records
   platform-wide** — section 8 covers errands and orders, but there's no
   `/api/admin/delivery-jobs` or `/api/admin/cleaning-bookings` list yet, and

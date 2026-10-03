@@ -27,15 +27,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
 import bcrypt from "bcryptjs";
 
-// 1. Establish a native PostgreSQL connection pool using the Direct URL
-const pool = new Pool({ 
-  connectionString: process.env.DIRECT_URL || process.env.DATABASE_URL 
-});
-
-// 2. Instantiate the Prisma adapter wrapper around the pool instance
+// Seeding always runs against the direct connection, never the pgbouncer
+// pooled one — same reasoning as prisma.config.ts.
+const pool = new Pool({ connectionString: process.env.DIRECT_URL || process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
-
-// 3. Inject the driver adapter directly into the client context options
 const prisma = new PrismaClient({ adapter });
 
 async function seedCleaningProvider() {
@@ -50,12 +45,8 @@ async function seedCleaningProvider() {
     );
   }
 
-  // PostgreSQL supports the native 'has' filter for scalar/enum lists seamlessly
   const existingActive = await prisma.accountProfile.findMany({
-    where: { 
-      roles: { has: "CLEANING_PROVIDER" }, 
-      isActive: true 
-    },
+    where: { roles: { has: "CLEANING_PROVIDER" }, isActive: true },
   });
 
   if (existingActive.length > 0) {
@@ -86,10 +77,12 @@ async function seedCleaningProvider() {
       businessName,
       isActive: true,
       jobCategoryIds: [],
-      // serviceRegions is a relational model, initialized as empty
-      serviceRegions: {
-        create: []
-      },
+      // serviceRegions is a Json column (an array of Location objects, not
+      // a relation — Postgres has no equivalent to Mongo's composite-type
+      // list), so it's just a plain empty array literal, not `{ create: [] }`.
+      // Update it later via PATCH /api/account once you know which areas
+      // the company actually covers.
+      serviceRegions: [],
     },
   });
 
@@ -109,6 +102,7 @@ async function seedAdmin() {
     throw new Error("ADMIN_PASSWORD must be set when ADMIN_EMAIL is provided.");
   }
 
+  // Always SUPER_ADMIN, never a lesser role — see docs/ADMIN_API.md for why.
   const existingUser = await prisma.user.findUnique({
     where: { email },
     include: { accountProfile: true },
@@ -137,9 +131,7 @@ async function seedAdmin() {
       isActive: true,
       adminRole: "SUPER_ADMIN",
       jobCategoryIds: [],
-      serviceRegions: {
-        create: []
-      },
+      serviceRegions: [],
     },
   });
 
@@ -157,8 +149,6 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
-    // Gracefully close the Prisma Client context
     await prisma.$disconnect();
-    // Gracefully shut down the native database connection pool
     await pool.end();
   });

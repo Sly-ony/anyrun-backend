@@ -5,14 +5,15 @@ import { ApiError, handleApiError } from "@/lib/apiError";
 import { updateCleaningBookingSchema } from "@/lib/validation/cleaningBooking";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function GET(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const booking = await prisma.cleaningBooking.findUnique({ where: { id: params.id } });
+    const booking = await prisma.cleaningBooking.findUnique({ where: { id } });
     if (!booking) throw new ApiError(404, "Cleaning booking not found.");
 
     const isCustomer = booking.customerId === auth.accountProfileId;
@@ -28,10 +29,11 @@ export async function GET(request: NextRequest, { params }: Params) {
 }
 
 export async function PATCH(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const booking = await prisma.cleaningBooking.findUnique({ where: { id: params.id } });
+    const booking = await prisma.cleaningBooking.findUnique({ where: { id } });
     if (!booking) throw new ApiError(404, "Cleaning booking not found.");
     if (booking.customerId !== auth.accountProfileId) {
       throw new ApiError(403, "Only the customer who made this booking can edit it.");
@@ -45,7 +47,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     });
     const data = updateCleaningBookingSchema.parse(body);
 
-    const updated = await prisma.cleaningBooking.update({ where: { id: params.id }, data });
+    const updated = await prisma.cleaningBooking.update({ where: { id }, data });
     return NextResponse.json({ booking: updated });
   } catch (err) {
     return handleApiError(err);

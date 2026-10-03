@@ -6,14 +6,15 @@ import { awardRfqSchema } from "@/lib/validation/rfq";
 import { notifyQuotationAwarded } from "@/lib/notificationService";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function POST(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const rfq = await prisma.rFQ.findUnique({ where: { id: params.id } });
+    const rfq = await prisma.rFQ.findUnique({ where: { id } });
     if (!rfq) throw new ApiError(404, "RFQ not found.");
 
     if (rfq.buyerId !== auth.accountProfileId) {

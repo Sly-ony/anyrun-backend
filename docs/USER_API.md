@@ -30,8 +30,11 @@ page size 20, max 100), response shape:
 { "items": [ /* ... */ ], "page": 1, "pageSize": 20, "total": 42 }
 ```
 
-**IDs** below are illustrative 24-character Mongo ObjectId strings. All
-dates are ISO-8601 strings.
+**IDs** are Postgres `cuid()` strings (e.g. `"clx1a2b3c0000qzrm..."`), not
+Mongo ObjectIds — the example ids below (`"65f1a2b3c4d5e6f7a8b9c0d1"` etc.)
+are illustrative placeholders only, left as 24-char hex strings for
+readability; real ids won't look exactly like that. All dates are ISO-8601
+strings.
 
 **The `Location` shape**, used everywhere an address/region is needed
 (errand/RFQ/catalog locations, service regions, delivery/cleaning
@@ -1615,3 +1618,260 @@ No request body.
 ```json
 { "updatedCount": 3 }
 ```
+
+---
+
+## 13. Wallet — deposits & withdrawals — `/api/wallet`, `/api/account/payout-methods`
+
+Every account has a running GBP wallet balance (`AccountProfile.walletBalance`,
+also returned by `GET /api/auth/me`'s `profile`). It's funded two ways:
+
+1. **Deposits** — you top it up yourself via Paystack or Flutterwave.
+2. **Earnings** — automatically, in full, whenever one of your `.../pay`
+   endpoints elsewhere in this document succeeds and you're the payee: the
+   errand/RFQ/catalog/cleaning flows in sections 4–7 all credit your wallet
+   net of commission the moment the (mocked) charge succeeds, and delivery
+   fees (section 8) credit it in full (no commission). You don't call
+   anything extra for this — it just happens.
+
+**Known limitation**: the wallet is not yet spendable at checkout — paying
+for an errand, RFQ, catalog item, or cleaning booking still always goes
+through the existing mock payment flow directly (see sections 4–7), not your
+wallet balance. Deposits currently exist to let a payer top up their wallet
+and (once that integration is built) spend from it; today the wallet is
+mainly how earnings accumulate for withdrawal. This is a known gap, not an
+oversight — ask if you want wallet-funded checkout built next.
+
+**Currency caveat**: Paystack does not support GBP settlement or UK bank
+payouts as of this writing (its core markets are NGN/GHS/ZAR/KES) — deposits
+and withdrawals through Paystack will likely fail for a GBP-denominated
+account unless your merchant account is specifically approved otherwise.
+Flutterwave has broader reach but exact currency/corridor support still
+depends on what's enabled for your account. Confirm with each gateway
+directly before relying on either for real money movement.
+
+### Payout methods — `/api/account/payout-methods`
+
+A saved bank account withdrawals pay out to. Creating one immediately
+registers a transfer recipient with the chosen gateway.
+
+#### `POST /api/account/payout-methods`
+
+**Request body:**
+```json
+{
+  "provider": "PAYSTACK",
+  "accountName": "Jane Doe",
+  "accountNumber": "0123456789",
+  "bankCode": "058",
+  "bankName": "GTBank",
+  "currency": "GBP",
+  "isDefault": true
+}
+```
+`currency` defaults to `"GBP"`; `isDefault` defaults to `false` (setting it
+unsets any previous default for this account). `bankCode` is whatever the
+chosen gateway's bank-list endpoint uses to identify the bank — not
+documented here since fetching that list isn't yet wrapped by this API; for
+now, get it directly from the gateway's own bank-list endpoint/docs.
+
+**Response — `201`:**
+```json
+{
+  "payoutMethod": {
+    "id": "65f1a2b3c4d5e6f7a8b9d000",
+    "accountProfileId": "65f1a2b3c4d5e6f7a8b9c0d1",
+    "provider": "PAYSTACK",
+    "accountName": "Jane Doe",
+    "accountNumber": "0123456789",
+    "bankCode": "058",
+    "bankName": "GTBank",
+    "currency": "GBP",
+    "isDefault": true,
+    "providerRecipientCode": "RCP_abc123xyz",
+    "createdAt": "2026-10-02T09:00:00.000Z",
+    "updatedAt": "2026-10-02T09:00:00.000Z"
+  }
+}
+```
+
+**Errors:** `400` — `{ "error": "Could not register this account with PAYSTACK: Paystack API error (/transferrecipient): <gateway's message>" }` (bad account number/bank code, or a currency the gateway doesn't support — see the currency caveat above) · zod validation messages for missing fields.
+
+#### `GET /api/account/payout-methods`
+
+**Response — `200`:** `{ "payoutMethods": [ /* your own, newest first, same shape as above */ ] }`
+
+#### `DELETE /api/account/payout-methods/{id}`
+
+No request body.
+
+**Response — `200`:** `{ "success": true }`
+
+**Errors:** `403` not yours · `409` — `{ "error": "Cannot remove a payout method with a withdrawal still in progress." }`
+
+---
+
+### Wallet balance & ledger
+
+#### `GET /api/wallet`
+
+**Response — `200`:**
+```json
+{ "walletBalance": 153.0, "currency": "GBP" }
+```
+
+#### `GET /api/wallet/transactions`
+
+Query params: `page`, `pageSize`. The full ledger behind the balance — every
+credit and debit, in order.
+
+**Response — `200`:**
+```json
+{
+  "items": [
+    {
+      "id": "65f1a2b3c4d5e6f7a8b9d100",
+      "accountProfileId": "65f1a2b3c4d5e6f7a8b9c0d1",
+      "type": "EARNING",
+      "amount": 12.75,
+      "balanceAfter": 153.0,
+      "description": "Payment for errand 65f1a2b3c4d5e6f7a8b9c400",
+      "relatedDepositId": null,
+      "relatedWithdrawalId": null,
+      "relatedOrderId": "65f1a2b3c4d5e6f7a8b9c500",
+      "relatedDeliveryJobId": null,
+      "relatedCleaningBookingId": null,
+      "createdAt": "2026-10-01T13:00:00.000Z"
+    }
+  ],
+  "page": 1,
+  "pageSize": 20,
+  "total": 1
+}
+```
+`type` is one of `DEPOSIT`, `EARNING`, `WITHDRAWAL` (a debit — reserved the
+moment a withdrawal is *created*, not when it completes), `WITHDRAWAL_REVERSAL`
+(a credit — automatic refund when a withdrawal ends up `FAILED`). `amount`
+is always positive regardless of direction; `type` tells you which way it
+went. `balanceAfter` is a snapshot, so you never need to replay the whole
+ledger to know the balance at any point in your history.
+
+---
+
+### Deposits — `/api/wallet/deposits`
+
+#### `POST /api/wallet/deposits`
+
+**Request body:**
+```json
+{ "amount": 50.0, "provider": "FLUTTERWAVE", "currency": "GBP" }
+```
+`currency` is optional, defaults to `"GBP"`.
+
+**Response — `201`:**
+```json
+{
+  "deposit": {
+    "id": "65f1a2b3c4d5e6f7a8b9d200",
+    "accountProfileId": "65f1a2b3c4d5e6f7a8b9c0d1",
+    "provider": "FLUTTERWAVE",
+    "amount": 50.0,
+    "currency": "GBP",
+    "status": "PENDING",
+    "reference": "dep_3f2a1c9e-...",
+    "providerReference": null,
+    "checkoutUrl": "https://checkout.flutterwave.com/v3/hosted/pay/...",
+    "paidAt": null,
+    "createdAt": "2026-10-02T09:10:00.000Z",
+    "updatedAt": "2026-10-02T09:10:00.000Z"
+  }
+}
+```
+Redirect the user's browser to `checkoutUrl` to complete payment. After the
+gateway redirects back to your configured callback URL, poll
+`GET /api/wallet/deposits/{id}` (below) until `status` is no longer
+`PENDING` — the webhook is the primary completion path, but that polling
+endpoint actively re-verifies with the gateway too, so you don't have to
+wait on webhook delivery to show the user an answer.
+
+**Errors:**
+- `502` — `{ "error": "Could not start the deposit with FLUTTERWAVE: ..." }` (gateway rejected initialization — the `Deposit` row is still created, marked `FAILED`)
+- `500` — `{ "error": "WALLET_DEPOSIT_CALLBACK_URL is not configured on the server." }` (deployment issue)
+
+#### `GET /api/wallet/deposits`
+
+**Response — `200`:** `{ "items": [ /* your own, newest first */ ], "page": 1, "pageSize": 20, "total": 1 }`
+
+#### `GET /api/wallet/deposits/{id}`
+
+No request body. If `status` is still `PENDING`, this actively calls the
+gateway's verify-payment API before responding — so calling it is itself
+part of how a deposit gets completed, not just a read.
+
+**Response — `200`:** `{ "deposit": { /* same shape as create, status possibly now COMPLETED or FAILED */ } }`
+
+**Errors:** `404` · `403` — not yours.
+
+---
+
+### Withdrawals — `/api/wallet/withdrawals`
+
+#### `POST /api/wallet/withdrawals`
+
+**Request body:**
+```json
+{ "amount": 100.0, "payoutMethodId": "65f1a2b3c4d5e6f7a8b9d000" }
+```
+The gateway used is whatever provider the referenced payout method was
+registered with — you don't choose it separately here.
+
+**Response — `201`:**
+```json
+{
+  "withdrawal": {
+    "id": "65f1a2b3c4d5e6f7a8b9d300",
+    "accountProfileId": "65f1a2b3c4d5e6f7a8b9c0d1",
+    "provider": "PAYSTACK",
+    "payoutMethodId": "65f1a2b3c4d5e6f7a8b9d000",
+    "amount": 100.0,
+    "currency": "GBP",
+    "status": "PROCESSING",
+    "reference": "wd_7c4e2a1b-...",
+    "providerTransferId": "TRF_abc123",
+    "failureReason": null,
+    "processedAt": null,
+    "createdAt": "2026-10-02T09:20:00.000Z",
+    "updatedAt": "2026-10-02T09:20:00.000Z"
+  }
+}
+```
+**Your wallet balance is debited immediately on creation** (visible straight
+away in `GET /api/wallet` and as a `WITHDRAWAL` ledger entry), before the
+gateway has confirmed anything — this is what makes concurrent withdrawal
+requests safe against double-spending the same balance. If the gateway
+later reports failure (via webhook), the amount is automatically credited
+back (`WITHDRAWAL_REVERSAL`) and `status` becomes `FAILED`; you don't need
+to do anything to reclaim it. `status` in the response itself can also come
+back as `FAILED` directly, if the gateway rejected the transfer synchronously
+rather than asynchronously.
+
+**Errors:**
+- `404` — `{ "error": "Payout method not found." }`
+- `403` — `{ "error": "You do not own this payout method." }`
+- `409` — `{ "error": "Insufficient wallet balance." }`
+- `409` — `{ "error": "This payout method is not fully registered with its provider yet." }`
+
+#### `GET /api/wallet/withdrawals`
+
+**Response — `200`:** `{ "items": [ /* your own, newest first */ ], "page": 1, "pageSize": 20, "total": 1 }`
+
+#### `GET /api/wallet/withdrawals/{id}`
+
+**Response — `200`:** `{ "withdrawal": { /* same shape as create */ } }`
+
+`status` values: `PENDING` (just created, transfer not yet accepted by the
+gateway) → `PROCESSING` (gateway accepted it, awaiting its webhook) →
+`COMPLETED` or `FAILED` (terminal; `FAILED` always comes with a refunded
+balance and a `failureReason`).
+
+**Errors:** `404` · `403` — not yours.

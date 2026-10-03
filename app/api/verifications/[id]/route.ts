@@ -5,14 +5,15 @@ import { hasCapability } from "@/lib/adminPermissions";
 import { ApiError, handleApiError } from "@/lib/apiError";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function GET(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const verification = await prisma.verification.findUnique({ where: { id: params.id } });
+    const verification = await prisma.verification.findUnique({ where: { id } });
     if (!verification) throw new ApiError(404, "Verification not found.");
 
     const canReview = hasCapability(auth.adminRole, "MANAGE_VERIFICATIONS");

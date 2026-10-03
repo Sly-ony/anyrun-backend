@@ -4,14 +4,15 @@ import { requireAuth } from "@/lib/guard";
 import { ApiError, handleApiError } from "@/lib/apiError";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function GET(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const order = await prisma.orderTx.findUnique({ where: { id: params.id } });
+    const order = await prisma.orderTx.findUnique({ where: { id } });
     if (!order) throw new ApiError(404, "Order not found.");
 
     if (order.payerId !== auth.accountProfileId && order.payeeId !== auth.accountProfileId) {

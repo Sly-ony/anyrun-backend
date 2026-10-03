@@ -7,14 +7,15 @@ import { checkCleaningTransition } from "@/lib/cleaningBookingStateMachine";
 import { notifyCleaningBookingUpdate } from "@/lib/notificationService";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function POST(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const booking = await prisma.cleaningBooking.findUnique({ where: { id: params.id } });
+    const booking = await prisma.cleaningBooking.findUnique({ where: { id } });
     if (!booking) throw new ApiError(404, "Cleaning booking not found.");
 
     const isCustomer = booking.customerId === auth.accountProfileId;
@@ -37,7 +38,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     }
 
     const updated = await prisma.cleaningBooking.update({
-      where: { id: params.id },
+      where: { id },
       data: {
         status: nextStatus,
         ...(price !== undefined ? { price } : {}),
