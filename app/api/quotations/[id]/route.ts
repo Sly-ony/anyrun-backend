@@ -5,7 +5,7 @@ import { ApiError, handleApiError } from "@/lib/apiError";
 import { updateQuotationSchema } from "@/lib/validation/quotation";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 async function loadQuotationWithRfq(id: string) {
@@ -17,9 +17,10 @@ async function loadQuotationWithRfq(id: string) {
 }
 
 export async function GET(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
-    const { quotation, rfq } = await loadQuotationWithRfq(params.id);
+    const { quotation, rfq } = await loadQuotationWithRfq(id);
 
     const isOwner = quotation.supplierId === auth.accountProfileId;
     const isBuyer = rfq.buyerId === auth.accountProfileId;
@@ -34,9 +35,10 @@ export async function GET(request: NextRequest, { params }: Params) {
 }
 
 export async function PATCH(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
-    const { quotation, rfq } = await loadQuotationWithRfq(params.id);
+    const { quotation, rfq } = await loadQuotationWithRfq(id);
 
     if (quotation.supplierId !== auth.accountProfileId) {
       throw new ApiError(403, "Only the submitting supplier can edit this quotation.");
@@ -58,7 +60,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       (data.lineItems ? data.lineItems.reduce((sum, item) => sum + item.price, 0) : undefined);
 
     const updated = await prisma.quotation.update({
-      where: { id: params.id },
+      where: { id },
       data: {
         ...(data.lineItems !== undefined ? { lineItems: data.lineItems } : {}),
         ...(totalPrice !== undefined ? { totalPrice } : {}),
@@ -75,9 +77,10 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 // Hard delete: a withdrawn draft quotation has no audit value once gone,
 // unlike an ACCEPTED/REJECTED decision (which we never allow deleting here).
 export async function DELETE(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
-    const { quotation, rfq } = await loadQuotationWithRfq(params.id);
+    const { quotation, rfq } = await loadQuotationWithRfq(id);
 
     if (quotation.supplierId !== auth.accountProfileId) {
       throw new ApiError(403, "Only the submitting supplier can withdraw this quotation.");
@@ -89,7 +92,7 @@ export async function DELETE(request: NextRequest, { params }: Params) {
       throw new ApiError(409, "This RFQ is no longer open, so its quotations are locked.");
     }
 
-    await prisma.quotation.delete({ where: { id: params.id } });
+    await prisma.quotation.delete({ where: { id } });
 
     return NextResponse.json({ success: true });
   } catch (err) {

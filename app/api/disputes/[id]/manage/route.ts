@@ -7,17 +7,18 @@ import { manageDisputeSchema } from "@/lib/validation/dispute";
 import { notifyDisputeUpdate } from "@/lib/notificationService";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 const TERMINAL_STATUSES = ["RESOLVED", "DISMISSED"];
 
 export async function POST(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
     requireAdminCapability(auth, "MANAGE_DISPUTES");
 
-    const dispute = await prisma.dispute.findUnique({ where: { id: params.id } });
+    const dispute = await prisma.dispute.findUnique({ where: { id } });
     if (!dispute) throw new ApiError(404, "Dispute not found.");
     if (TERMINAL_STATUSES.includes(dispute.status)) {
       throw new ApiError(409, `This dispute is already ${dispute.status}.`);
@@ -34,7 +35,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     }
 
     const updated = await prisma.dispute.update({
-      where: { id: params.id },
+      where: { id },
       data: {
         status,
         ...(resolutionNotes !== undefined ? { resolutionNotes } : {}),

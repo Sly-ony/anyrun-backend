@@ -5,16 +5,18 @@ import { requireAuth } from "@/lib/guard";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { updateRfqSchema } from "@/lib/validation/rfq";
 import { SUPPLIER_ROLE } from "@/lib/roles";
+import { asRFQLineItems } from "@/lib/json";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function GET(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const rfq = await prisma.rFQ.findUnique({ where: { id: params.id } });
+    const rfq = await prisma.rFQ.findUnique({ where: { id } });
     if (!rfq) throw new ApiError(404, "RFQ not found.");
 
     const isBuyer = rfq.buyerId === auth.accountProfileId;
@@ -36,10 +38,11 @@ export async function GET(request: NextRequest, { params }: Params) {
 }
 
 export async function PATCH(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const rfq = await prisma.rFQ.findUnique({ where: { id: params.id } });
+    const rfq = await prisma.rFQ.findUnique({ where: { id } });
     if (!rfq) throw new ApiError(404, "RFQ not found.");
 
     if (rfq.buyerId !== auth.accountProfileId) {
@@ -55,7 +58,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     const data = updateRfqSchema.parse(body);
 
     const updated = await prisma.rFQ.update({
-      where: { id: params.id },
+      where: { id },
       data: {
         ...(data.title !== undefined ? { title: data.title } : {}),
         ...(data.region !== undefined ? { region: data.region } : {}),
@@ -65,10 +68,10 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         ...(data.lineItems !== undefined
           ? {
               lineItems: data.lineItems.map((item, i) => ({
-                itemId: rfq.lineItems[i]?.itemId ?? randomUUID(),
+                itemId: asRFQLineItems(rfq.lineItems)[i]?.itemId ?? randomUUID(),
                 name: item.name,
                 quantity: item.quantity,
-                notes: item.notes,
+                notes: item.notes ?? null,
               })),
             }
           : {}),
@@ -84,10 +87,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 // Soft-close rather than delete, to keep a full audit trail of RFQs the
 // buyer walked away from.
 export async function DELETE(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const rfq = await prisma.rFQ.findUnique({ where: { id: params.id } });
+    const rfq = await prisma.rFQ.findUnique({ where: { id } });
     if (!rfq) throw new ApiError(404, "RFQ not found.");
 
     if (rfq.buyerId !== auth.accountProfileId) {
@@ -98,7 +102,7 @@ export async function DELETE(request: NextRequest, { params }: Params) {
     }
 
     const updated = await prisma.rFQ.update({
-      where: { id: params.id },
+      where: { id },
       data: { status: "CLOSED" },
     });
 

@@ -5,14 +5,15 @@ import { ApiError, handleApiError } from "@/lib/apiError";
 import { createAndChargeOrder } from "@/lib/orderService";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function POST(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const booking = await prisma.cleaningBooking.findUnique({ where: { id: params.id } });
+    const booking = await prisma.cleaningBooking.findUnique({ where: { id } });
     if (!booking) throw new ApiError(404, "Cleaning booking not found.");
 
     if (booking.customerId !== auth.accountProfileId) {

@@ -6,7 +6,7 @@ import { ApiError, handleApiError } from "@/lib/apiError";
 import { createAndChargeOrder } from "@/lib/orderService";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 const purchaseSchema = z.object({
@@ -14,10 +14,11 @@ const purchaseSchema = z.object({
 });
 
 export async function POST(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const item = await prisma.catalogItem.findUnique({ where: { id: params.id } });
+    const item = await prisma.catalogItem.findUnique({ where: { id } });
     if (!item) throw new ApiError(404, "Catalog item not found.");
     if (!item.isAvailable) throw new ApiError(409, "This item is no longer available.");
     if (item.supplierId === auth.accountProfileId) {

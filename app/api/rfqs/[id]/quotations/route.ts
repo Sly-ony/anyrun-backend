@@ -7,15 +7,16 @@ import { SUPPLIER_ROLE } from "@/lib/roles";
 import { notifyQuotationReceived } from "@/lib/notificationService";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function POST(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
     requireRole(auth, [SUPPLIER_ROLE]);
 
-    const rfq = await prisma.rFQ.findUnique({ where: { id: params.id } });
+    const rfq = await prisma.rFQ.findUnique({ where: { id } });
     if (!rfq) throw new ApiError(404, "RFQ not found.");
     if (rfq.status !== "OPEN") {
       throw new ApiError(409, "This RFQ is no longer accepting quotations.");
@@ -66,10 +67,11 @@ export async function POST(request: NextRequest, { params }: Params) {
 }
 
 export async function GET(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const rfq = await prisma.rFQ.findUnique({ where: { id: params.id } });
+    const rfq = await prisma.rFQ.findUnique({ where: { id } });
     if (!rfq) throw new ApiError(404, "RFQ not found.");
 
     const isBuyer = rfq.buyerId === auth.accountProfileId;

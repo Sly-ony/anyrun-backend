@@ -7,15 +7,16 @@ import { suspendUserSchema } from "@/lib/validation/suspension";
 import { notifyAccountSuspended } from "@/lib/notificationService";
 
 interface Params {
-  params: { id: string }; // AccountProfile.id
+  params: Promise<{ id: string }>; // AccountProfile.id
 }
 
 export async function POST(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
     requireAdminCapability(auth, "MANAGE_USERS");
 
-    const profile = await prisma.accountProfile.findUnique({ where: { id: params.id } });
+    const profile = await prisma.accountProfile.findUnique({ where: { id } });
     if (!profile) throw new ApiError(404, "Account not found.");
     if (!profile.isActive) throw new ApiError(409, "This account is already suspended.");
     if (profile.adminRole) {
@@ -28,7 +29,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     const { reason } = suspendUserSchema.parse(body);
 
     const updated = await prisma.accountProfile.update({
-      where: { id: params.id },
+      where: { id },
       data: {
         isActive: false,
         suspensionReason: reason,

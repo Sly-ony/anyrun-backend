@@ -22,17 +22,40 @@ export async function chargeDeliveryJob(deliveryJobId: string, payerId: string, 
 
   const finalStatus = chargeResult.success ? "PAID" : "FAILED";
 
-  const payment = await prisma.payment.create({
-    data: {
-      sourceType: "DELIVERY_JOB",
-      deliveryJobId: job.id,
-      amount: job.deliveryFee,
-      deliveryFee: job.deliveryFee,
-      status: finalStatus,
-      provider: "mock",
-      providerRef: chargeResult.providerRef,
-      paidAt: chargeResult.success ? new Date() : null,
-    },
+  const payment = await prisma.$transaction(async (tx) => {
+    const payment = await tx.payment.create({
+      data: {
+        sourceType: "DELIVERY_JOB",
+        deliveryJobId: job.id,
+        amount: job.deliveryFee,
+        deliveryFee: job.deliveryFee,
+        status: finalStatus,
+        provider: "mock",
+        providerRef: chargeResult.providerRef,
+        paidAt: chargeResult.success ? new Date() : null,
+      },
+    });
+
+    // No commission on delivery fees — the full amount is the assignee's
+    // wallet credit, same atomicity rationale as orderService.ts.
+    if (chargeResult.success) {
+      const payeeProfile = await tx.accountProfile.update({
+        where: { id: payeeId },
+        data: { walletBalance: { increment: job.deliveryFee } },
+      });
+      await tx.walletTransaction.create({
+        data: {
+          accountProfileId: payeeId,
+          type: "EARNING",
+          amount: job.deliveryFee,
+          balanceAfter: payeeProfile.walletBalance,
+          description: `Delivery fee for job ${job.id}`,
+          relatedDeliveryJobId: job.id,
+        },
+      });
+    }
+
+    return payment;
   });
 
   if (!chargeResult.success) {

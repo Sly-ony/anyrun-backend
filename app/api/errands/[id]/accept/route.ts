@@ -6,15 +6,16 @@ import { RUNNER_ROLE } from "@/lib/roles";
 import { findJobCategoryByName, hasApprovedCategoryVerification } from "@/lib/verificationRules";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function POST(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
     requireRole(auth, [RUNNER_ROLE]);
 
-    const errand = await prisma.errandRequest.findUnique({ where: { id: params.id } });
+    const errand = await prisma.errandRequest.findUnique({ where: { id } });
     if (!errand) throw new ApiError(404, "Errand request not found.");
 
     if (errand.status !== "OPEN") {
@@ -43,7 +44,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     // Guard against two runners racing to accept the same errand: only
     // succeeds if it's still OPEN and unassigned at write time.
     const result = await prisma.errandRequest.updateMany({
-      where: { id: params.id, status: "OPEN", runnerId: null },
+      where: { id, status: "OPEN", runnerId: null },
       data: { status: "ACCEPTED", runnerId: auth.accountProfileId },
     });
 
@@ -51,7 +52,7 @@ export async function POST(request: NextRequest, { params }: Params) {
       throw new ApiError(409, "This errand was just accepted by someone else.");
     }
 
-    const updated = await prisma.errandRequest.findUnique({ where: { id: params.id } });
+    const updated = await prisma.errandRequest.findUnique({ where: { id } });
     return NextResponse.json({ errand: updated });
   } catch (err) {
     return handleApiError(err);

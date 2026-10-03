@@ -85,8 +85,8 @@ export async function GET(request: NextRequest) {
     }
 
     if (category) clauses.push({ category });
-    if (state && city) clauses.push({ region: { is: { state, city } } });
-    else if (state) clauses.push({ region: { is: { state } } });
+    if (state) clauses.push({ region: { path: ["state"], equals: state } });
+    if (city) clauses.push({ region: { path: ["city"], equals: city } });
 
     if (minPrice || maxPrice) {
       clauses.push({

@@ -7,7 +7,7 @@ import { ApiError, handleApiError } from "@/lib/apiError";
 import type { OrderSourceType } from "@prisma/client";
 
 interface Params {
-  params: { sourceType: string };
+  params: Promise<{ sourceType: string }>;
 }
 
 const VALID_SOURCE_TYPES: OrderSourceType[] = [
@@ -24,11 +24,12 @@ const updateRateSchema = z.object({
 // Deliberately MANAGE_COMMISSION_RATES, not the broader VIEW_ one — this is
 // the one capability DEVELOPER is explicitly excluded from.
 export async function PATCH(request: NextRequest, { params }: Params) {
+  const { sourceType } = await params;
   try {
     const auth = await requireAuth(request);
     requireAdminCapability(auth, "MANAGE_COMMISSION_RATES");
 
-    const sourceType = params.sourceType as OrderSourceType;
+    const sourceType = sourceType as OrderSourceType;
     if (!VALID_SOURCE_TYPES.includes(sourceType)) {
       throw new ApiError(400, `Invalid sourceType. Must be one of: ${VALID_SOURCE_TYPES.join(", ")}.`);
     }

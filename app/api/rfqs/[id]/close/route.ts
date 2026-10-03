@@ -4,16 +4,17 @@ import { requireAuth } from "@/lib/guard";
 import { ApiError, handleApiError } from "@/lib/apiError";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 // Same effect as DELETE /api/rfqs/[id] — provided as an explicit action verb
 // for clients/UIs that prefer POST-to-an-action over semantic DELETE.
 export async function POST(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const rfq = await prisma.rFQ.findUnique({ where: { id: params.id } });
+    const rfq = await prisma.rFQ.findUnique({ where: { id } });
     if (!rfq) throw new ApiError(404, "RFQ not found.");
 
     if (rfq.buyerId !== auth.accountProfileId) {
@@ -24,7 +25,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     }
 
     const updated = await prisma.rFQ.update({
-      where: { id: params.id },
+      where: { id },
       data: { status: "CLOSED" },
     });
 

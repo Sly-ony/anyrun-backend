@@ -32,8 +32,8 @@ export async function GET(request: NextRequest) {
     if (category) clauses.push({ category });
     if (customerId) clauses.push({ customerId });
     if (runnerId) clauses.push({ runnerId });
-    if (state && city) clauses.push({ location: { is: { state, city } } });
-    else if (state) clauses.push({ location: { is: { state } } });
+    if (state) clauses.push({ location: { path: ["state"], equals: state } });
+    if (city) clauses.push({ location: { path: ["city"], equals: city } });
 
     const where: Prisma.ErrandRequestWhereInput = clauses.length ? { AND: clauses } : {};
 

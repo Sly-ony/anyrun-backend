@@ -6,14 +6,15 @@ import { errandStatusChangeSchema } from "@/lib/validation/errand";
 import { checkErrandTransition } from "@/lib/errandStateMachine";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function POST(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const errand = await prisma.errandRequest.findUnique({ where: { id: params.id } });
+    const errand = await prisma.errandRequest.findUnique({ where: { id } });
     if (!errand) throw new ApiError(404, "Errand request not found.");
 
     const isCustomer = errand.customerId === auth.accountProfileId;
@@ -35,7 +36,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     if (error) throw new ApiError(409, error);
 
     const updated = await prisma.errandRequest.update({
-      where: { id: params.id },
+      where: { id },
       data: { status: nextStatus },
     });
 

@@ -10,9 +10,9 @@ export async function GET() {
   const startedAt = Date.now();
 
   try {
-    // Cheapest possible real round-trip to MongoDB via the Prisma connection
-    // — doesn't require any collection to have data, or even exist yet.
-    await prisma.$runCommandRaw({ ping: 1 });
+    // Cheapest possible real round-trip to Postgres via the Prisma
+    // connection — doesn't require any table to have data, or even exist.
+    await prisma.$queryRaw`SELECT 1`;
 
     return NextResponse.json({
       status: "ok",
@@ -26,7 +26,7 @@ export async function GET() {
         status: "error",
         time: new Date().toISOString(),
         database: { status: "disconnected" },
-        hint: "Check DATABASE_URL and that the MongoDB cluster/replica set is reachable from this environment.",
+        hint: "Check DATABASE_URL/DIRECT_URL and that your Supabase project is reachable from this environment.",
       },
       { status: 503 }
     );

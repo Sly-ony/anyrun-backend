@@ -5,14 +5,15 @@ import { ApiError, handleApiError } from "@/lib/apiError";
 import { createAndChargeOrder } from "@/lib/orderService";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function POST(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const quotation = await prisma.quotation.findUnique({ where: { id: params.id } });
+    const quotation = await prisma.quotation.findUnique({ where: { id } });
     if (!quotation) throw new ApiError(404, "Quotation not found.");
 
     const rfq = await prisma.rFQ.findUnique({ where: { id: quotation.rfqId } });

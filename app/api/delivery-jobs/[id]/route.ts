@@ -5,14 +5,15 @@ import { ApiError, handleApiError } from "@/lib/apiError";
 import { resolveDeliveryRequesterId } from "@/lib/deliveryAuth";
 
 interface Params {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function GET(request: NextRequest, { params }: Params) {
+  const { id } = await params;
   try {
     const auth = await requireAuth(request);
 
-    const job = await prisma.deliveryJob.findUnique({ where: { id: params.id } });
+    const job = await prisma.deliveryJob.findUnique({ where: { id } });
     if (!job) throw new ApiError(404, "Delivery job not found.");
 
     const requesterId = await resolveDeliveryRequesterId(job);
