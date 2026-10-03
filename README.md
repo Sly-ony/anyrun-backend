@@ -9,6 +9,29 @@ has `provider = "mongodb"` in `prisma/schema.prisma`, `@db.ObjectId`
 attributes, or a `type Location { ... }` composite type block, that's the
 pre-migration version — see "What changed in the Postgres migration" below.
 
+## ⚠️ Before every `next build`
+
+**Run `npx prisma generate` first — or wire it into your build script.** If
+`@prisma/client` hasn't been (re)generated against the current schema, `next
+build`/`tsc` fail with a very specific, very misleading error pattern: `Module
+'"@prisma/client"' has no exported member 'Prisma'` (or any model/enum name),
+cascading into `Parameter 'x' implicitly has an 'any' type` and `Property 'y'
+does not exist on type '{}'` everywhere Prisma types are used. None of that is
+a real code bug — it's just an ungenerated client. The fix is always the same:
+```
+npx prisma generate
+```
+For deploy platforms (Vercel, Railway, your own CI) that run a fresh
+`npm install` on every build, set your build command to generate first so
+this can never slip through:
+```json
+"scripts": {
+  "build": "prisma generate && next build"
+}
+```
+(or a `"postinstall": "prisma generate"` script — either works; the build
+command is more explicit about why it's there).
+
 ## Setup
 
 1. Install dependencies:

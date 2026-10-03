@@ -1,7 +1,8 @@
 import prisma from "./prisma";
+import type { WithdrawalStatus } from "@prisma/client";
 import { notifyWithdrawalUpdate } from "./notificationService";
 
-const TERMINAL_STATUSES = ["COMPLETED", "FAILED"];
+const TERMINAL_STATUSES: WithdrawalStatus[] = ["COMPLETED", "FAILED"];
 
 export async function markWithdrawalProcessing(withdrawalId: string, providerTransferId: string) {
   const result = await prisma.withdrawal.updateMany({
