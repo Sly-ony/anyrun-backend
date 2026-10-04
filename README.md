@@ -4,10 +4,6 @@ Next.js (App Router) + Prisma + PostgreSQL (Supabase) backend for Anyrun: an
 errand, procurement (RFQ) and delivery marketplace, plus a single reserved
 cleaning services vertical.
 
-**Migrated from MongoDB.** If you're looking at an older checkout that still
-has `provider = "mongodb"` in `prisma/schema.prisma`, `@db.ObjectId`
-attributes, or a `type Location { ... }` composite type block, that's the
-pre-migration version — see "What changed in the Postgres migration" below.
 
 ## ⚠️ Before every `next build`
 
