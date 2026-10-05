@@ -4,6 +4,7 @@ import { requireAuth } from "@/lib/guard";
 import { requireSuperAdmin } from "@/lib/adminPermissions";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { grantAdminRoleSchema } from "@/lib/validation/admin";
+import { logAdminAction } from "@/lib/auditLog";
 
 export async function GET(request: NextRequest) {
   try {
@@ -49,6 +50,8 @@ export async function POST(request: NextRequest) {
       where: { id: user.accountProfile.id },
       data: { adminRole: role },
     });
+
+    await logAdminAction(auth.accountProfileId, "ADMIN_ROLE_GRANTED", "AccountProfile", updated.id, { role });
 
     return NextResponse.json({ profile: updated });
   } catch (err) {

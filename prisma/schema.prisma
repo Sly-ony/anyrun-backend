@@ -377,8 +377,8 @@ model CleaningBooking {
   createdAt      DateTime               @default(now())
   updatedAt      DateTime               @updatedAt
 
-  order OrderTx?
-  payment Payment?   // <-- add this
+  order   OrderTx? // the CLEANING_BOOKING payment, via OrderTx.sourceCleaningBookingId
+  payment Payment? // back-relation required by Postgres for Payment.cleaningBooking
 }
 
 // ----------------------------------------------------------------------------
@@ -658,4 +658,52 @@ model WalletTransaction {
   relatedDeliveryJobId    String?
   relatedCleaningBookingId String?
   createdAt               DateTime              @default(now())
+}
+
+// ----------------------------------------------------------------------------
+// Password reset
+// ----------------------------------------------------------------------------
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique // sha256 of the raw token — the raw token is only ever in the emailed link, never stored
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+// ----------------------------------------------------------------------------
+// Admin-manageable reserved category keywords
+// ----------------------------------------------------------------------------
+
+// Admin-editable version of what used to be a hardcoded constant in
+// lib/catalogRules.ts. An empty table means "use the hardcoded defaults" —
+// same fallback pattern as CommissionRate — so there's nothing to seed
+// before the first admin manages this list.
+model ReservedCategoryKeyword {
+  id        String   @id @default(cuid())
+  keyword   String   @unique // stored lowercase; matched as a substring against a listing's category
+  addedBy   String?
+  createdAt DateTime @default(now())
+}
+
+// ----------------------------------------------------------------------------
+// Admin audit log
+// ----------------------------------------------------------------------------
+
+// A record of sensitive admin actions: who did what, to what, when. Not
+// wired into every single admin write (see docs/ADMIN_API.md for exactly
+// which actions are covered) — prioritized the ones with real
+// security/financial consequences: admin role grants/revokes, user
+// suspension, commission rate changes, verification decisions, dispute
+// resolutions, and reserved-category edits.
+model AdminAuditLog {
+  id         String   @id @default(cuid())
+  adminId    String // the acting admin's AccountProfile.id
+  action     String // short machine-readable label, e.g. "USER_SUSPENDED", "COMMISSION_RATE_UPDATED"
+  targetType String // e.g. "AccountProfile", "CommissionRate", "Verification", "Dispute"
+  targetId   String?
+  metadata   Json? // free-form extra detail (e.g. { reason, oldValue, newValue })
+  createdAt  DateTime @default(now())
 }

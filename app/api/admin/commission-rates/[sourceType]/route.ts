@@ -4,6 +4,7 @@ import prisma from "@/lib/prisma";
 import { requireAuth } from "@/lib/guard";
 import { requireAdminCapability } from "@/lib/adminPermissions";
 import { ApiError, handleApiError } from "@/lib/apiError";
+import { logAdminAction } from "@/lib/auditLog";
 import type { OrderSourceType } from "@prisma/client";
 
 interface Params {
@@ -39,10 +40,18 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     });
     const { rate } = updateRateSchema.parse(body);
 
+    const previous = await prisma.commissionRate.findUnique({ where: { sourceType } });
+
     const updated = await prisma.commissionRate.upsert({
       where: { sourceType },
       create: { sourceType, rate, updatedBy: auth.accountProfileId },
       update: { rate, updatedBy: auth.accountProfileId },
+    });
+
+    await logAdminAction(auth.accountProfileId, "COMMISSION_RATE_UPDATED", "CommissionRate", updated.id, {
+      sourceType,
+      oldRate: previous?.rate ?? null,
+      newRate: rate,
     });
 
     return NextResponse.json({ rate: updated });

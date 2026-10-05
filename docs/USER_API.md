@@ -221,6 +221,90 @@ No request body.
 
 ---
 
+### `POST /api/auth/password-reset/request` *(public)*
+
+```json
+{ "email": "jane@example.co.uk" }
+```
+
+**Response — `200`:**
+```json
+{ "message": "If an account with that email exists, a password reset link has been sent." }
+```
+**Always the same message, whether or not the email is registered** — this
+is deliberate, so the endpoint can't be used to find out which emails have
+accounts. No real email provider is connected yet (see `lib/email.ts`) — the
+reset link is only logged server-side. Outside `NODE_ENV=production`, the
+response also includes `"devOnlyToken": "<raw token>"` so the flow is
+testable without reading logs; **this field must not exist once a real
+email provider is wired in and the app is actually deployed for real users**.
+
+**Errors:** `400` zod message (invalid email format — note a *malformed*
+email still gets a validation error; only a well-formed-but-unregistered
+one gets the generic success message).
+
+### `POST /api/auth/password-reset/confirm` *(public)*
+
+```json
+{ "token": "a1b2c3d4...", "newPassword": "at-least-8-characters" }
+```
+`token` is the raw value from the reset link's `?token=` query param (or the
+`devOnlyToken` above in non-production).
+
+**Response — `200`:**
+```json
+{ "message": "Password updated. You can now log in with your new password." }
+```
+Using a token invalidates every other outstanding reset request for that
+user, not just the one used — a successful reset closes out all pending
+links.
+
+**Errors:** `400` — `{ "error": "This password reset link is invalid or has expired." }` (covers: token doesn't exist, already used, or past its 1-hour expiry — same message for all three, so an attacker probing tokens can't distinguish "wrong" from "expired").
+
+---
+
+## Uploads — `/api/uploads`
+
+Generic file upload to Vercel Blob Storage, used wherever else in this API
+a field expects a client-supplied URL — verification documents (section 3),
+catalog/advert/blog images, avatars. Upload first, then pass the returned
+`url` into whichever endpoint needs it.
+
+### `POST /api/uploads`
+
+**Request**: `multipart/form-data` with a single `file` field — not JSON.
+```
+POST /api/uploads
+Content-Type: multipart/form-data; boundary=...
+
+------boundary
+Content-Disposition: form-data; name="file"; filename="id-front.jpg"
+Content-Type: image/jpeg
+
+<binary data>
+------boundary--
+```
+
+**Response — `201`:**
+```json
+{
+  "url": "https://xxxxx.public.blob.vercel-storage.com/uploads/65f1a2b3c4d5e6f7a8b9c0d1/1696234567-id-front-ab12cd34.jpg",
+  "pathname": "uploads/65f1a2b3c4d5e6f7a8b9c0d1/1696234567-id-front-ab12cd34.jpg",
+  "contentType": "image/jpeg",
+  "size": 204800
+}
+```
+`url` is what you pass elsewhere (e.g. into `documents` on
+`POST /api/account/business-verification`). Max file size 15MB.
+
+**Errors:**
+- `400` — `{ "error": "No file provided — send it as a 'file' field in multipart/form-data." }`
+- `400` — `{ "error": "Uploaded file is empty." }`
+- `413` — `{ "error": "File exceeds the 15MB limit." }`
+- `500` — `{ "error": "File uploads are not configured on the server (BLOB_READ_WRITE_TOKEN missing)." }` (deployment issue)
+
+---
+
 ## 2. Account — `/api/account`, `/api/accounts`
 
 ### `PATCH /api/account`

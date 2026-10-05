@@ -1,9 +1,9 @@
+import jwt from "jsonwebtoken";
 import { NextRequest, NextResponse } from "next/server";
 import type { AccountType } from "@prisma/client";
-import jwt, { type SignOptions } from "jsonwebtoken";
 
 const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_EXPIRES_IN = (process.env.JWT_EXPIRES_IN ?? "30d") as SignOptions["expiresIn"];
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN ?? "30d";
 export const SESSION_COOKIE_NAME = "anyrun_session";
 
 if (!JWT_SECRET) {

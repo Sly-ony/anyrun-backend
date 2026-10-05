@@ -1,25 +1,4 @@
-import type { Prisma } from "@prisma/client";
 import type { RegionLike } from "./validation/shared";
-
-/**
- * Converts a Json column holding an array of Location objects
- * (e.g. AccountProfile.serviceRegions) into a typed RegionLike[].
- * Prisma reads Json columns back as untyped JsonValue, so route code
- * must go through this before calling `.length` or `anyRegionMatch`.
- * Never throws: a null, non-array, or malformed value yields [] or
- * drops the bad entries.
- */
-export function asRegions(value: Prisma.JsonValue | null | undefined): RegionLike[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter(
-    (r): r is Prisma.JsonObject =>
-      typeof r === "object" &&
-      r !== null &&
-      !Array.isArray(r) &&
-      typeof r.state === "string" &&
-      typeof r.city === "string"
-  ) as unknown as RegionLike[];
-}
 
 /**
  * Builds a Prisma `OR` filter that matches a single-object Json `Location`
@@ -30,7 +9,7 @@ export function asRegions(value: Prisma.JsonValue | null | undefined): RegionLik
  * array case (AccountProfile.serviceRegions) needs a different approach.
  *
  * Usage:
- *   const clauses: Prisma.ErrandRequestWhereInput[] = [{ status: "OPEN" }];
+ *   const clauses = [{ status: "OPEN" }];
  *   if (regions.length) clauses.push(anyRegionMatch("location", regions));
  *   const where = { AND: clauses };
  */
@@ -42,7 +21,7 @@ export function anyRegionMatch(field: string, regions: RegionLike[]) {
         { [field]: { path: ["city"], equals: r.city } },
       ],
     })),
-  } as any; // computed key `[field]` widens the type; callers pass this into a typed where array
+  };
 }
 
 /**

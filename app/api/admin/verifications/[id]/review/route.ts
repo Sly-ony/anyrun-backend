@@ -5,6 +5,7 @@ import { requireAdminCapability } from "@/lib/adminPermissions";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { reviewVerificationSchema } from "@/lib/validation/verification";
 import { notifyVerificationReviewed } from "@/lib/notificationService";
+import { logAdminAction } from "@/lib/auditLog";
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -52,6 +53,11 @@ export async function POST(request: NextRequest, { params }: Params) {
     } catch (e) {
       console.error("Failed to notify submitter of verification decision:", e);
     }
+
+    await logAdminAction(auth.accountProfileId, "VERIFICATION_REVIEWED", "Verification", id, {
+      decision,
+      rejectionReason: rejectionReason ?? null,
+    });
 
     return NextResponse.json({ verification: updated });
   } catch (err) {

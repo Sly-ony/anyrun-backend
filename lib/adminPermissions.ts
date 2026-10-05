@@ -11,7 +11,8 @@ export type AdminCapability =
   | "MANAGE_DISPUTES" // view + resolve disputes
   | "MANAGE_JOB_CATEGORIES"
   | "MANAGE_VERIFICATIONS" // review business/job-category submissions
-  | "VIEW_PLATFORM_DATA"; // platform-wide errands/orders/revenue (read-only — no corresponding MANAGE_ variant yet)
+  | "VIEW_PLATFORM_DATA" // platform-wide errands/orders/revenue/rfqs/catalog/cleaning/delivery (read-only — no corresponding MANAGE_ variant yet)
+  | "VIEW_AUDIT_LOG"; // sensitive enough to withhold from SUPPORT even though SUPPORT has VIEW_PLATFORM_DATA
 
 // SUPER_ADMIN is deliberately not listed here — it's handled as a bypass in
 // hasCapability below, since by definition it can do everything any other
@@ -27,6 +28,7 @@ const ROLE_CAPABILITIES: Record<Exclude<AdminRole, "SUPER_ADMIN">, AdminCapabili
     "MANAGE_JOB_CATEGORIES",
     "MANAGE_VERIFICATIONS",
     "VIEW_PLATFORM_DATA",
+    "VIEW_AUDIT_LOG",
   ],
   EDITOR: ["MANAGE_CONTENT"],
   // SUPPORT gets VIEW_PLATFORM_DATA alongside MANAGE_DISPUTES: resolving a

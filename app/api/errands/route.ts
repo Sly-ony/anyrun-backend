@@ -4,10 +4,10 @@ import { requireAuth, requireRole } from "@/lib/guard";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { createErrandSchema } from "@/lib/validation/errand";
 import { ERRAND_CUSTOMER_ROLES, RUNNER_ROLE } from "@/lib/roles";
+import { anyRegionMatch } from "@/lib/region";
 import { parsePagination } from "@/lib/pagination";
 import { notifyNewErrandRequest } from "@/lib/notificationService";
 import type { Prisma } from "@prisma/client";
-import { anyRegionMatch, asRegions } from "@/lib/region";
 
 export async function POST(request: NextRequest) {
   try {
@@ -72,9 +72,9 @@ export async function GET(request: NextRequest) {
           where: { id: auth.accountProfileId },
           select: { serviceRegions: true },
         });
-        const regions = asRegions(profile?.serviceRegions);
+        const regions = profile?.serviceRegions ?? [];
         if (regions.length > 0) {
-          clauses.push(anyRegionMatch("location", regions) as Prisma.ErrandRequestWhereInput);
+          clauses.push(anyRegionMatch("location", regions));
         }
       }
     }
