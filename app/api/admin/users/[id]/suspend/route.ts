@@ -5,6 +5,7 @@ import { requireAdminCapability } from "@/lib/adminPermissions";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { suspendUserSchema } from "@/lib/validation/suspension";
 import { notifyAccountSuspended } from "@/lib/notificationService";
+import { logAdminAction } from "@/lib/auditLog";
 
 interface Params {
   params: Promise<{ id: string }>; // AccountProfile.id
@@ -43,6 +44,8 @@ export async function POST(request: NextRequest, { params }: Params) {
     } catch (e) {
       console.error("Failed to create suspension notification:", e);
     }
+
+    await logAdminAction(auth.accountProfileId, "USER_SUSPENDED", "AccountProfile", id, { reason });
 
     return NextResponse.json({ profile: updated });
   } catch (err) {

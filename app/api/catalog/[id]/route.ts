@@ -36,7 +36,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     });
     const data = updateCatalogItemSchema.parse(body);
 
-    if (data.category && isReservedCategory(data.category)) {
+    if (data.category && (await isReservedCategory(data.category))) {
       throw new ApiError(
         400,
         "Cleaning services are exclusively provided through the platform's cleaning booking flow and cannot be listed as a catalog category."

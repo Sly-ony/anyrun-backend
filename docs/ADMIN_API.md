@@ -28,6 +28,8 @@ login/signup. Omit it → `401`:
 | `MANAGE_JOB_CATEGORIES` | ✅ | ✅ | ❌ | ❌ |
 | `MANAGE_VERIFICATIONS` | ✅ | ✅ | ❌ | ❌ |
 | `VIEW_PLATFORM_DATA` | ✅ | ✅ | ❌ | ✅ |
+| `VIEW_AUDIT_LOG` | ✅ | ✅ | ❌ | ❌ |
+| `MANAGE_WITHDRAWALS` | ✅ | ✅ | ❌ | ✅ |
 
 Failing a capability check → `403`:
 ```json
@@ -292,6 +294,13 @@ value is `response.rate.rate`, not `response.rate` directly.
 
 Capability: **`MANAGE_VERIFICATIONS`** (`SUPER_ADMIN`, `DEVELOPER`).
 
+**Where `PENDING` items come from now**: a `BUSINESS` verification is
+created **automatically at sign-up** from the `businessDocuments` the
+account submitted during registration — it lands in this queue with no
+separate action from the user. `JOB_CATEGORY` ones still come from
+`POST /api/account/job-categories`. Every `documents` entry is
+`{ "title", "url" }`, never a bare URL string.
+
 ### `GET /api/admin/verifications`
 
 Query params (all optional): `status` (default `"PENDING"`; pass `"ALL"`
@@ -308,7 +317,7 @@ for every status), `type` (`"BUSINESS"` or `"JOB_CATEGORY"`), `page`,
       "type": "BUSINESS",
       "jobCategoryId": null,
       "status": "PENDING",
-      "documents": ["https://files.example.com/certificate-of-incorporation.pdf"],
+      "documents": [{ "title": "Certificate of Incorporation", "url": "https://files.example.com/certificate-of-incorporation.pdf" }],
       "notes": null,
       "rejectionReason": null,
       "reviewedBy": null,
@@ -321,7 +330,7 @@ for every status), `type` (`"BUSINESS"` or `"JOB_CATEGORY"`), `page`,
       "type": "JOB_CATEGORY",
       "jobCategoryId": "65f1a2b3c4d5e6f7a8b9c0d2",
       "status": "PENDING",
-      "documents": ["https://files.example.com/id-front.jpg", "https://files.example.com/id-back.jpg"],
+      "documents": [{ "title": "ID — front", "url": "https://files.example.com/id-front.jpg" }, { "title": "ID — back", "url": "https://files.example.com/id-back.jpg" }],
       "notes": null,
       "rejectionReason": null,
       "reviewedBy": null,
@@ -366,7 +375,7 @@ Ordered oldest-first (`submittedAt asc`) — oldest pending review surfaces firs
     "type": "BUSINESS",
     "jobCategoryId": null,
     "status": "APPROVED",
-    "documents": ["https://files.example.com/certificate-of-incorporation.pdf"],
+    "documents": [{ "title": "Certificate of Incorporation", "url": "https://files.example.com/certificate-of-incorporation.pdf" }],
     "notes": null,
     "rejectionReason": null,
     "reviewedBy": "65f1a2b3c4d5e6f7a8b9c0d1",
@@ -1009,14 +1018,17 @@ endpoint, worded differently for a terminal vs. non-terminal status change.
 
 ---
 
-## 8. Platform data — errands, orders, revenue, deposits, withdrawals
+## 8. Platform data — errands, orders, RFQs, catalog, cleaning, delivery, revenue, deposits, withdrawals
 
-Covers `/api/admin/errands`, `/api/admin/orders`, `/api/admin/revenue`,
-`/api/admin/deposits`, `/api/admin/withdrawals`. Capability:
-**`VIEW_PLATFORM_DATA`** (`SUPER_ADMIN`, `DEVELOPER`, `SUPPORT` — `SUPPORT`
-has it specifically so resolving a dispute doesn't dead-end at an id it
-can't look up). Read-only — there's no `MANAGE_` counterpart yet (see
-"Remaining known gaps" below).
+Covers `/api/admin/errands`, `/api/admin/orders`, `/api/admin/rfqs`,
+`/api/admin/quotations`, `/api/admin/catalog`, `/api/admin/cleaning-bookings`,
+`/api/admin/delivery-jobs`, `/api/admin/revenue`, `/api/admin/deposits`,
+`/api/admin/withdrawals`. Capability: **`VIEW_PLATFORM_DATA`** (`SUPER_ADMIN`,
+`DEVELOPER`, `SUPPORT` — `SUPPORT` has it specifically so resolving a
+dispute doesn't dead-end at an id it can't look up). These are read-only
+views; the one write action in this area is processing withdrawals, under
+its own `MANAGE_WITHDRAWALS` capability (see below). No other `MANAGE_`
+counterpart exists yet (see "Remaining known gaps" below).
 
 ### `GET /api/admin/errands`
 
@@ -1054,6 +1066,136 @@ There's no separate admin detail route for a single errand — `GET
 account, admins included.
 
 **Errors:** `401` · `403` — `{ "error": "This action requires the VIEW_PLATFORM_DATA admin capability." }`
+
+---
+
+### `GET /api/admin/rfqs`
+
+Platform-wide RFQ list — unlike `GET /api/rfqs`, not scoped to the buyer's
+own or the open/region-scoped supplier feed. Query params (all optional):
+`status`, `buyerId`, `state`, `city`, `page`, `pageSize`.
+
+**Response — `200`:**
+```json
+{
+  "items": [
+    { "id": "65f1a2b3c4d5e6f7a8b9c700", "buyerId": "65f1a2b3c4d5e6f7a8b9c0e2", "title": "Furnishing a 3-bed flat", "lineItems": [{ "itemId": "a1b2c3d4-...", "name": "Fridge freezer", "quantity": 1, "notes": null }], "region": { "country": "United Kingdom", "state": "Greater London", "city": "London" }, "deadline": "2026-10-20T00:00:00.000Z", "status": "AWARDED", "awardedQuotationId": "65f1a2b3c4d5e6f7a8b9c800", "createdAt": "...", "updatedAt": "..." }
+  ],
+  "page": 1, "pageSize": 20, "total": 1
+}
+```
+
+### `GET /api/admin/rfqs/{id}`
+
+RFQ detail **plus every quotation against it** — the user-facing
+`GET /api/rfqs/{id}` only shows the full quotation list to the RFQ's own
+buyer (a supplier sees just their own, anyone else sees none). This is the
+admin bypass.
+
+**Response — `200`:**
+```json
+{
+  "rfq": { "id": "65f1a2b3c4d5e6f7a8b9c700", "buyerId": "...", "title": "...", "lineItems": [ /* ... */ ], "region": { /* ... */ }, "deadline": "...", "status": "AWARDED", "awardedQuotationId": "65f1a2b3c4d5e6f7a8b9c800", "createdAt": "...", "updatedAt": "..." },
+  "quotations": [
+    { "id": "65f1a2b3c4d5e6f7a8b9c800", "rfqId": "65f1a2b3c4d5e6f7a8b9c700", "supplierId": "65f1a2b3c4d5e6f7a8b9c0e5", "lineItems": [ /* ... */ ], "totalPrice": 450.0, "notes": "...", "status": "ACCEPTED", "createdAt": "...", "updatedAt": "..." }
+  ]
+}
+```
+
+**Errors:** `404` — `{ "error": "RFQ not found." }`
+
+### `GET /api/admin/quotations/{id}`
+
+Standalone quotation detail — for when you have a quotation id directly
+(e.g. surfaced via a dispute) without wanting to look up its parent RFQ
+first.
+
+**Response — `200`:** `{ "quotation": { /* same shape as above */ } }`
+
+**Errors:** `404` — `{ "error": "Quotation not found." }`
+
+---
+
+### `GET /api/admin/catalog`
+
+Platform-wide catalog list — unlike `GET /api/catalog`, includes hidden
+(`isAvailable: false`) listings and isn't scoped to one supplier's own.
+Query params (all optional): `supplierId`, `category`, `isAvailable`
+(`"true"`/`"false"` — omit to see both), `state`, `city`, `page`, `pageSize`.
+
+**Response — `200`:**
+```json
+{
+  "items": [
+    { "id": "65f1a2b3c4d5e6f7a8b9c900", "supplierId": "65f1a2b3c4d5e6f7a8b9c0e5", "title": "3-seater grey fabric sofa", "description": "...", "category": "furniture", "price": 250.0, "currency": "GBP", "photos": [], "region": { /* ... */ }, "isAvailable": true, "createdAt": "...", "updatedAt": "..." }
+  ],
+  "page": 1, "pageSize": 20, "total": 1
+}
+```
+
+(No separate admin detail route — `GET /api/catalog/{id}` is already
+public.)
+
+---
+
+### `GET /api/admin/cleaning-bookings`
+
+Platform-wide list. Query params (all optional): `status`, `customerId`,
+`serviceScope` (`DOMESTIC`/`COMMERCIAL`), `page`, `pageSize`. There's no
+`providerId` filter — there's only ever the one seeded provider.
+
+**Response — `200`:**
+```json
+{
+  "items": [
+    { "id": "65f1a2b3c4d5e6f7a8b9ca00", "customerId": "...", "providerId": "...", "serviceScope": "DOMESTIC", "address": { /* ... */ }, "scheduledDate": "...", "notes": "...", "price": 60.0, "status": "COMPLETED", "createdAt": "...", "updatedAt": "..." }
+  ],
+  "page": 1, "pageSize": 20, "total": 1
+}
+```
+
+### `GET /api/admin/cleaning-bookings/{id}`
+
+Detail bypass — the user-facing `GET /api/cleaning-bookings/{id}` 403s
+anyone who isn't the booking's customer or the provider.
+
+**Response — `200`:** `{ "booking": { /* same shape as above */ } }`
+
+**Errors:** `404` — `{ "error": "Cleaning booking not found." }`
+
+---
+
+### `GET /api/admin/delivery-jobs`
+
+Platform-wide list. Query params (all optional): `status`, `assigneeId`,
+`page`, `pageSize`.
+
+**Response — `200`:**
+```json
+{
+  "items": [
+    { "id": "65f1a2b3c4d5e6f7a8b9cb00", "errandRequestId": "...", "relatedOrderId": null, "pickupAddress": { /* ... */ }, "dropoffAddress": { /* ... */ }, "deliveryFee": 8.5, "status": "DELIVERED", "assigneeId": "65f1a2b3c4d5e6f7a8b9c0e5", "scheduledAt": "...", "createdAt": "...", "updatedAt": "..." }
+  ],
+  "page": 1, "pageSize": 20, "total": 1
+}
+```
+
+### `GET /api/admin/delivery-jobs/{id}`
+
+Detail bypass, including its `Payment` — same reasoning as
+`GET /api/admin/orders/{id}`: delivery fee payments never become an
+`OrderTx` (no commission), so this is the only admin route that can see one
+for a job the admin isn't a party to.
+
+**Response — `200`:**
+```json
+{
+  "job": { "id": "65f1a2b3c4d5e6f7a8b9cb00", "errandRequestId": "...", "relatedOrderId": null, "pickupAddress": { /* ... */ }, "dropoffAddress": { /* ... */ }, "deliveryFee": 8.5, "status": "DELIVERED", "assigneeId": "...", "scheduledAt": "...", "createdAt": "...", "updatedAt": "..." },
+  "payment": { "id": "...", "sourceType": "DELIVERY_JOB", "orderId": null, "deliveryJobId": "65f1a2b3c4d5e6f7a8b9cb00", "cleaningBookingId": null, "amount": 8.5, "commissionAmount": null, "deliveryFee": 8.5, "status": "PAID", "provider": "mock", "providerRef": "...", "paidAt": "...", "createdAt": "...", "updatedAt": "..." }
+}
+```
+
+**Errors:** `404` — `{ "error": "Delivery job not found." }`
 
 ---
 
@@ -1176,48 +1318,253 @@ Platform-wide deposit list. Query params (all optional): `status`
 
 ---
 
-### `GET /api/admin/withdrawals`
+### `GET /api/admin/withdrawals` — the payout list
 
-Platform-wide withdrawal list. Same query params as deposits, with `status`
-one of `PENDING`/`PROCESSING`/`COMPLETED`/`FAILED`. No request body.
+**Withdrawals are manual**: a user's request debits their wallet and sits
+`PENDING`; support pays it by bank transfer outside the system, then marks
+it done (below). This endpoint is the list support works from. Capability:
+`VIEW_PLATFORM_DATA`.
+
+Query params (all optional): `status` (`PENDING`/`COMPLETED`/`FAILED`;
+`PROCESSING` is unused by the manual flow), `accountProfileId`, `page`,
+`pageSize`, and **`format=csv`**. Each item includes the user's saved bank
+details (`payoutMethod`) so nothing else needs looking up. With
+`status=PENDING` the list is **oldest-first** (pay in the order requested);
+otherwise newest-first.
 
 **Response — `200`:**
 ```json
 {
   "items": [
-    { "id": "65f1a2b3c4d5e6f7a8b9d300", "accountProfileId": "65f1a2b3c4d5e6f7a8b9c0d1", "provider": "PAYSTACK", "payoutMethodId": "65f1a2b3c4d5e6f7a8b9d000", "amount": 100.0, "currency": "GBP", "status": "PROCESSING", "reference": "wd_7c4e2a1b-...", "providerTransferId": "TRF_abc123", "failureReason": null, "processedAt": null, "createdAt": "2026-10-02T09:20:00.000Z", "updatedAt": "2026-10-02T09:20:00.000Z" }
+    {
+      "id": "65f1a2b3c4d5e6f7a8b9d300",
+      "accountProfileId": "65f1a2b3c4d5e6f7a8b9c0d1",
+      "provider": null,
+      "payoutMethodId": "65f1a2b3c4d5e6f7a8b9d000",
+      "amount": 100.0,
+      "currency": "GBP",
+      "status": "PENDING",
+      "reference": "wd_7c4e2a1b-...",
+      "providerTransferId": null,
+      "failureReason": null,
+      "payoutReference": null,
+      "processedBy": null,
+      "processedAt": null,
+      "createdAt": "2026-10-02T09:20:00.000Z",
+      "updatedAt": "2026-10-02T09:20:00.000Z",
+      "payoutMethod": { "id": "65f1a2b3c4d5e6f7a8b9d000", "accountName": "Jane Doe", "accountNumber": "12345678", "bankCode": "20-00-00", "bankName": "Barclays", "currency": "GBP", "isDefault": true, "provider": null, "providerRecipientCode": null, "accountProfileId": "65f1a2b3c4d5e6f7a8b9c0d1", "createdAt": "...", "updatedAt": "..." }
+    }
   ],
   "page": 1, "pageSize": 20, "total": 1
 }
 ```
 
+**`?format=csv`** returns a downloadable, printable sheet (`text/csv`,
+`Content-Disposition: attachment`) instead of JSON — every match (not
+paginated, capped at 1000 rows), oldest first, with columns:
+`withdrawalId, requestedAt, status, amount, currency, accountName,
+accountNumber, sortCode, bankName, reference, payoutReference`. Typical use:
+`GET /api/admin/withdrawals?status=PENDING&format=csv`.
+
 **Errors:** `401` · `403`.
 
-*(There is deliberately no admin write endpoint here — e.g. to manually
-force a stuck withdrawal to `COMPLETED`/`FAILED`. See "Remaining known
-gaps" below.)*
+---
+
+### `POST /api/admin/withdrawals/{id}/complete`
+
+Capability: **`MANAGE_WITHDRAWALS`** (`SUPER_ADMIN`, `DEVELOPER`, `SUPPORT`).
+Call this **after** you've actually sent the bank transfer.
+
+```json
+{ "payoutReference": "FPS-20261002-884213" }
+```
+`payoutReference` (required) is the bank transfer reference/ID from the
+payment you made.
+
+**Response — `200`:**
+```json
+{ "withdrawal": { "id": "65f1a2b3c4d5e6f7a8b9d300", "status": "COMPLETED", "amount": 100.0, "payoutReference": "FPS-20261002-884213", "processedBy": "65f1a2b3c4d5e6f7a8b9c0f9", "processedAt": "2026-10-02T14:00:00.000Z", "failureReason": null, "...": "..." } }
+```
+The user gets a `WITHDRAWAL_UPDATE` notification. Audit-logged as
+`WITHDRAWAL_COMPLETED`.
+
+**Errors:** `404` — `{ "error": "Withdrawal not found." }` · `409` — `{ "error": "This withdrawal is already COMPLETED." }` (or `FAILED` — only `PENDING` requests can be actioned) · `400` — `payoutReference` missing · `403`.
+
+### `POST /api/admin/withdrawals/{id}/reject`
+
+Capability: **`MANAGE_WITHDRAWALS`**.
+
+```json
+{ "reason": "Account name doesn't match the registered account holder." }
+```
+`reason` is required.
+
+**Response — `200`:** `{ "withdrawal": { "status": "FAILED", "failureReason": "Account name doesn't match...", "processedBy": "...", "processedAt": "...", "...": "..." } }`
+
+**The reserved amount is automatically refunded** to the user's wallet (a
+`WITHDRAWAL_REVERSAL` ledger entry) in the same step, and they're notified.
+Audit-logged as `WITHDRAWAL_REJECTED`.
+
+**Errors:** same as `/complete`, with `400` for a missing `reason`.
+
+---
+
+## 8b. Category relationships — `/api/job-categories/{id}/related`
+
+Capability: **`MANAGE_JOB_CATEGORIES`** (`SUPER_ADMIN`, `DEVELOPER`) for
+writes; the `GET` is public (see `USER_API.md`, section 3). These links are
+what feed the 5% "related" slice of the discovery feed (see
+`USER_API.md`, section 14) — e.g. relating "Cleaning" to "Gardening" means a
+cleaner's feed occasionally surfaces gardening posts. Relationships are
+symmetric: adding A↔B once is enough; you never add B↔A separately.
+
+### `POST /api/job-categories/{id}/related`
+
+```json
+{ "relatedCategoryId": "65f1a2b3c4d5e6f7a8b9c0d3" }
+```
+
+**Response — `201`:**
+```json
+{ "relation": { "id": "65f1a2b3c4d5e6f7a8b9d600", "categoryAId": "65f1a2b3c4d5e6f7a8b9c0d2", "categoryBId": "65f1a2b3c4d5e6f7a8b9c0d3", "createdAt": "..." } }
+```
+Which category is stored as `A` vs `B` is just whichever was in the URL vs
+the body — it doesn't matter, lookups check both directions.
+
+**Errors:**
+- `404` — `{ "error": "Job category not found." }` / `{ "error": "relatedCategoryId does not exist." }`
+- `400` — `{ "error": "A category cannot be related to itself." }`
+- `409` — `{ "error": "These categories are already related." }` (checked in both directions — adding B↔A after A↔B also 409s)
+
+### `DELETE /api/job-categories/{id}/related/{relatedId}`
+
+No request body. Works regardless of which direction the relation was
+originally stored.
+
+**Response — `200`:** `{ "success": true }`
+
+**Errors:** `404` — `{ "error": "These categories are not related." }`
+
+---
+
+## 9. Reserved category keywords — `/api/admin/reserved-categories`
+
+Capability: **`MANAGE_JOB_CATEGORIES`** (`SUPER_ADMIN`, `DEVELOPER`). This is
+the admin-manageable version of what used to be a hardcoded constant in
+`lib/catalogRules.ts` — the keyword list that blocks `BUSINESS_SUPPLIER`
+accounts from listing a catalog category containing "cleaning" (that
+vertical is exclusive to the seeded `CLEANING_PROVIDER`).
+
+### `GET /api/admin/reserved-categories`
+```json
+{
+  "keywords": [
+    { "id": "...", "keyword": "cleaning", "addedBy": null, "createdAt": "..." }
+  ],
+  "usingHardcodedDefaults": false,
+  "effectiveKeywords": ["cleaning"]
+}
+```
+`usingHardcodedDefaults: true` and `keywords: []` together mean the table is
+empty and the system is falling back to the built-in defaults
+(`["cleaning", "cleaner", "housekeeping"]`) — `effectiveKeywords` always
+shows what's actually being checked against right now, whichever source
+it's coming from. `addedBy` is `null` for keywords that came from a
+database row created before this field existed, or seeded by other means;
+otherwise it's the admin's `AccountProfile.id`.
+
+### `POST /api/admin/reserved-categories`
+```json
+{ "keyword": "Laundry" }
+```
+Stored lowercased and trimmed. **The first keyword you add switches the
+system off the hardcoded defaults entirely** — if you want "cleaning" to
+stay blocked *and* add "laundry", add both explicitly; adding only
+"laundry" would mean "cleaning" is no longer reserved.
+
+**Response — `201`:** `{ "keyword": { "id": "...", "keyword": "laundry", "addedBy": "...", "createdAt": "..." } }`
+
+**Errors:** `409` — `{ "error": "This keyword is already reserved." }`
+
+### `DELETE /api/admin/reserved-categories/{id}`
+**Response — `200`:** `{ "success": true }`
+**Errors:** `404` — `{ "error": "Reserved keyword not found." }`
+
+---
+
+## 10. Audit log — `/api/admin/audit-log`
+
+Capability: **`VIEW_AUDIT_LOG`** (`SUPER_ADMIN`, `DEVELOPER` only —
+deliberately withheld from `SUPPORT` even though `SUPPORT` has
+`VIEW_PLATFORM_DATA`; this is a step more sensitive than user/dispute
+visibility).
+
+### `GET /api/admin/audit-log`
+Query params (all optional): `action`, `adminId`, `targetType`, `page`,
+`pageSize`.
+
+**Response — `200`:**
+```json
+{
+  "items": [
+    { "id": "...", "adminId": "65f1a2b3c4d5e6f7a8b9c0d1", "action": "USER_SUSPENDED", "targetType": "AccountProfile", "targetId": "65f1a2b3c4d5e6f7a8b9c0e5", "metadata": { "reason": "Repeated no-shows" }, "createdAt": "..." },
+    { "id": "...", "adminId": "65f1a2b3c4d5e6f7a8b9c0d1", "action": "COMMISSION_RATE_UPDATED", "targetType": "CommissionRate", "targetId": "...", "metadata": { "sourceType": "ERRAND", "oldRate": 0.15, "newRate": 0.12 }, "createdAt": "..." }
+  ],
+  "page": 1, "pageSize": 20, "total": 2
+}
+```
+
+**Not every admin write is logged here** — only the ones with real
+security/financial consequences:
+
+| `action` | Logged from |
+|---|---|
+| `ADMIN_ROLE_GRANTED` | `POST /api/admin/admins` |
+| `ADMIN_ROLE_REVOKED` | `DELETE /api/admin/admins/{id}` |
+| `USER_SUSPENDED` | `POST /api/admin/users/{id}/suspend` |
+| `USER_REINSTATED` | `POST /api/admin/users/{id}/reinstate` |
+| `COMMISSION_RATE_UPDATED` | `PATCH /api/admin/commission-rates/{sourceType}` |
+| `VERIFICATION_REVIEWED` | `POST /api/admin/verifications/{id}/review` |
+| `DISPUTE_UPDATED` | `POST /api/disputes/{id}/manage` |
+| `WITHDRAWAL_COMPLETED` / `WITHDRAWAL_REJECTED` | `POST /api/admin/withdrawals/{id}/complete` / `/reject` |
+| `RESERVED_CATEGORY_ADDED` / `RESERVED_CATEGORY_REMOVED` | section 9 above |
+| `CATEGORY_RELATION_ADDED` / `CATEGORY_RELATION_REMOVED` | section 8b above |
+
+Content (blog/adverts), job-category create/edit, and every read-only
+`VIEW_PLATFORM_DATA` endpoint are **not** logged here — see `lib/auditLog.ts`
+and `logAdminAction` if you want to extend coverage.
+
+---
+
+## Cleaning provider region management — clarified, not a gap
+
+There is **no admin endpoint** that sets which regions the seeded
+`CLEANING_PROVIDER` account covers, and that's intentional, not missing: the
+provider account is a real, loggable-in account like any other (see
+`prisma/seed.ts`), so it manages its own `serviceRegions` the exact same way
+a `RUNNER` or `BUSINESS_SUPPLIER` does — by logging in as that account and
+calling `PATCH /api/account` (see `USER_API.md`, section 2). An admin acting
+*as* the provider is just using the provider's own login, not a separate
+admin surface. If you want a true admin-side override (editing the
+provider's regions without its credentials), that doesn't exist today and
+would need a dedicated endpoint.
 
 ---
 
 ## Remaining known gaps
 
-- **No admin write access over deposits/withdrawals** — `GET /api/admin/deposits`
-  and `/withdrawals` are read-only (section 8). If a gateway's webhook never
-  arrives (and the user never happens to poll `GET /api/wallet/deposits/{id}`,
-  which also re-verifies), a deposit/withdrawal can sit `PENDING`/`PROCESSING`
-  indefinitely with no admin action to force-resolve it — manual DB
-  intervention would be required today.
-- **Paystack's GBP/UK support is unconfirmed** — its documented settlement
-  currencies are NGN/GHS/ZAR/KES. If your merchant account isn't approved
-  for GBP, every Paystack deposit/withdrawal for this business will fail at
-  the gateway. See `lib/payments/paystack.ts` for the full caveat; confirm
-  directly with Paystack before relying on it in production.
-- **No admin visibility into `DeliveryJob` or `CleaningBooking` records
-  platform-wide** — section 8 covers errands and orders, but there's no
-  `/api/admin/delivery-jobs` or `/api/admin/cleaning-bookings` list yet, and
-  a `DeliveryJob`'s `Payment` (which never becomes an `OrderTx` — no
-  commission) has no admin bypass the way `GET /api/admin/orders/{id}`
-  provides for orders.
+- **No admin force-resolve for a stuck *deposit*** — `GET /api/admin/deposits`
+  is read-only. If a gateway's webhook never arrives (and the user never
+  happens to poll `GET /api/wallet/deposits/{id}`, which also re-verifies),
+  a deposit can sit `PENDING` indefinitely; manual DB intervention would be
+  needed. (Withdrawals no longer have this problem — they're manual and
+  fully actionable via `/complete` and `/reject` above.)
+- **The deposit gateway is a placeholder** — Paystack (Flutterwave also
+  wired in) until the business owner decides; Stripe is the likely UK
+  choice. Paystack's documented settlement currencies are NGN/GHS/ZAR/KES,
+  so GBP deposits through it may fail unless the merchant account is
+  specifically approved. See `lib/payments/paystack.ts`. Withdrawals are
+  unaffected — they don't use any gateway.
 - **No time-series/trend data** — `GET /api/admin/revenue` gives totals and
   a by-source-type breakdown for a date range, not a pre-bucketed series
   (e.g. "revenue by day") for charting; that'd mean calling it repeatedly
@@ -1228,10 +1575,17 @@ gaps" below.)*
 - `Dispute.relatedId` is a loose, unenforced reference — looking up the
   actual related record is a manual follow-up by the admin (easier now for
   errands/orders via section 8, but not automatically joined).
-- No unified audit log across admin actions — each model records its own
-  trail (`reviewedBy`, `suspendedBy`, `updatedBy` on commission rates, etc.)
-  but there's no single "admin action history" view.
+- **Audit log coverage is partial, not comprehensive** — section 10 covers
+  admin grants/revokes, suspension, commission rate edits, verification
+  decisions, dispute resolutions, and reserved-category edits. Content
+  (blog/advert) actions and job-category create/edit are not logged there
+  yet — extend via `logAdminAction` in `lib/auditLog.ts` if you want full
+  coverage.
 - `AdvertPost.placement` is free text with no fixed taxonomy.
+- **No admin write access over delivery jobs/cleaning bookings/catalog/RFQs**
+  — section 8's catalog/RFQ/cleaning/delivery endpoints are read-only, same as errands/orders already were; there's no
+  `MANAGE_` counterpart for any of them (force-completing a stuck delivery,
+  editing a catalog listing on a supplier's behalf, etc.).
 
 ---
 

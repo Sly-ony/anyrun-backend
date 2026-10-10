@@ -1,8 +1,13 @@
 import prisma from "./prisma";
-import type { WithdrawalStatus } from "@prisma/client";
 import { notifyWithdrawalUpdate } from "./notificationService";
 
-const TERMINAL_STATUSES: WithdrawalStatus[] = ["COMPLETED", "FAILED"];
+import { WithdrawalStatus } from "@prisma/client"; // 1. Import the Prisma enum
+
+// 2. Explicitly cast the array as WithdrawalStatus[]
+const TERMINAL_STATUSES: WithdrawalStatus[] = [
+  WithdrawalStatus.COMPLETED, 
+  WithdrawalStatus.FAILED
+];
 
 export async function markWithdrawalProcessing(withdrawalId: string, providerTransferId: string) {
   const result = await prisma.withdrawal.updateMany({
@@ -29,7 +34,8 @@ export async function markWithdrawalProcessing(withdrawalId: string, providerTra
  */
 export async function resolveWithdrawal(
   withdrawalId: string,
-  outcome: { success: true } | { success: false; reason: string }
+  outcome: { success: true } | { success: false; reason: string },
+  meta: { processedBy?: string; payoutReference?: string } = {}
 ) {
   const withdrawal = await prisma.withdrawal.findUnique({ where: { id: withdrawalId } });
   if (!withdrawal || TERMINAL_STATUSES.includes(withdrawal.status)) {
@@ -39,7 +45,12 @@ export async function resolveWithdrawal(
   if (outcome.success) {
     const claim = await prisma.withdrawal.updateMany({
       where: { id: withdrawalId, status: { notIn: TERMINAL_STATUSES } },
-      data: { status: "COMPLETED", processedAt: new Date() },
+      data: {
+        status: "COMPLETED",
+        processedAt: new Date(),
+        ...(meta.processedBy ? { processedBy: meta.processedBy } : {}),
+        ...(meta.payoutReference ? { payoutReference: meta.payoutReference } : {}),
+      },
     });
     if (claim.count > 0) {
       try {
@@ -54,7 +65,12 @@ export async function resolveWithdrawal(
   const result = await prisma.$transaction(async (tx) => {
     const claim = await tx.withdrawal.updateMany({
       where: { id: withdrawalId, status: { notIn: TERMINAL_STATUSES } },
-      data: { status: "FAILED", failureReason: outcome.reason, processedAt: new Date() },
+      data: {
+        status: "FAILED",
+        failureReason: outcome.reason,
+        processedAt: new Date(),
+        ...(meta.processedBy ? { processedBy: meta.processedBy } : {}),
+      },
     });
     if (claim.count === 0) return null;
 

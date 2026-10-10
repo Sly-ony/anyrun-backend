@@ -3,6 +3,7 @@ import prisma from "@/lib/prisma";
 import { requireAuth } from "@/lib/guard";
 import { requireAdminCapability } from "@/lib/adminPermissions";
 import { ApiError, handleApiError } from "@/lib/apiError";
+import { logAdminAction } from "@/lib/auditLog";
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -27,6 +28,8 @@ export async function POST(request: NextRequest, { params }: Params) {
         suspendedBy: null,
       },
     });
+
+    await logAdminAction(auth.accountProfileId, "USER_REINSTATED", "AccountProfile", id);
 
     return NextResponse.json({ profile: updated });
   } catch (err) {
