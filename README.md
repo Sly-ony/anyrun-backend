@@ -50,8 +50,6 @@ command is more explicit about why it's there).
    ```
    npx prisma db seed
    ```
-   This project uses the new `prisma.config.ts` (not a `package.json`
-   `"prisma"` key) to point `db seed` at `tsx prisma/seed.ts`.
 5. Run the app:
    ```
    npm run dev
