@@ -22,7 +22,7 @@ export function handleApiError(err: unknown): NextResponse {
   }
 
   if (err instanceof ZodError) {
-    const message = err.errors.map((e) => e.message).join("; ");
+    const message = err.issues.map((e) => e.message).join("; ");
     return NextResponse.json({ error: message }, { status: 400 });
   }
 

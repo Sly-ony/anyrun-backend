@@ -72,7 +72,9 @@ export async function GET(request: NextRequest) {
           where: { id: auth.accountProfileId },
           select: { serviceRegions: true },
         });
-        const regions = profile?.serviceRegions ?? [];
+        // Cast the JsonValue to an array type so TS knows .length exists and anyRegionMatch accepts it
+        const regions = (profile?.serviceRegions as unknown as any[]) ?? [];
+
         if (regions.length > 0) {
           clauses.push(anyRegionMatch("location", regions));
         }

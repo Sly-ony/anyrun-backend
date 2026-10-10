@@ -1,4 +1,4 @@
-import jwt from "jsonwebtoken";
+import jwt , { SignOptions } from "jsonwebtoken";
 import { NextRequest, NextResponse } from "next/server";
 import type { AccountType } from "@prisma/client";
 
@@ -19,7 +19,10 @@ export interface SessionPayload {
 }
 
 export function signSession(payload: SessionPayload): string {
-  return jwt.sign(payload, JWT_SECRET as string, { expiresIn: JWT_EXPIRES_IN });
+  const options: SignOptions = {
+    expiresIn: JWT_EXPIRES_IN as SignOptions["expiresIn"],
+  };
+  return jwt.sign(payload, JWT_SECRET as string, options);
 }
 
 /** Returns the decoded payload, or null if the token is missing/invalid/expired. */

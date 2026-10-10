@@ -1,29 +1,5 @@
 // ============================================================================
 // Anyrun — Prisma Schema (PostgreSQL / Supabase)
-// ============================================================================
-// Migrated from MongoDB. Notes on what changed and why:
-// - All ids are `@default(cuid())` strings now, not Mongo ObjectIds. No
-//   `@map("_id")`/`@db.ObjectId` — those were Mongo-only attributes.
-// - `datasource.url` is Supabase's pooled (pgbouncer, port 6543) connection
-//   string, used at runtime; `directUrl` is the direct (port 5432) one,
-//   used only for migrations — pgbouncer in transaction mode can't run DDL.
-// - Postgres has no Prisma "composite types" (that was Mongo-only). Every
-//   field that used to be a `Location`/`RFQLineItem`/`QuotationLineItem`
-//   embed is now a `Json` column holding the same shape — see
-//   lib/validation/shared.ts for the `Location` TS type, and
-//   lib/validation/rfq.ts / quotation.ts for the line-item shapes. This
-//   means Prisma Client reads these fields back as untyped `JsonValue`, not
-//   the nice embedded-object type Mongo gave us — calling code casts them;
-//   see lib/json.ts.
-// - Region-matching queries (e.g. "errands in this runner's state") used to
-//   use Mongo's composite `{ is: { state: ... } }` filter; Postgres/Prisma
-//   instead filters Json columns with `{ path: ["state"], equals: ... }` —
-//   see lib/region.ts.
-// - Still true post-migration: AccountProfile.roles is an array so a user
-//   can hold multiple roles at once; Payment is a generic ledger entry
-//   pointing at exactly one of Order/DeliveryJob/CleaningBooking, enforced
-//   in app logic since Postgres has no native polymorphic relation either.
-// ============================================================================
 
 generator client {
   provider = "prisma-client-js"
@@ -179,7 +155,13 @@ model AccountProfile {
   user          User          @relation(fields: [userId], references: [id])
   roles         AccountType[]
   accountKind   AccountKind   // derived from roles at sign-up — see the enum comment
-  businessName  String? // used when roles includes BUSINESS_BUYER / BUSINESS_SUPPLIER
+  // Comprehensive address, required of every account at sign-up (not the
+  // same thing as serviceRegions below, which is "areas I operate in" and
+  // only meaningful for a RUNNER/BUSINESS_SUPPLIER — this is "where I am").
+  // AddressInput shape, see lib/validation/shared.ts.
+  address Json?
+  businessName  String? // required if accountKind = BUSINESS
+  businessAddress Json? // required if accountKind = BUSINESS — same AddressInput shape as `address`
   serviceRegions Json     @default("[]") // Location[] shape, see lib/validation/shared.ts — regions this runner/supplier actively serves
   isActive      Boolean       @default(true) // false = suspended (see suspension fields) or the CLEANING_PROVIDER singleton gate
   adminRole     AdminRole? // null = not an admin. First one is bootstrapped via prisma/seed.ts; SUPER_ADMIN grants the rest via POST /api/admin/admins
@@ -231,6 +213,8 @@ model AccountProfile {
   deposits        Deposit[]
   withdrawals     Withdrawal[]
   walletTransactions WalletTransaction[]
+
+  posts Post[]
 }
 
 // ----------------------------------------------------------------------------
@@ -255,6 +239,30 @@ model JobCategory {
   updatedAt            DateTime @updatedAt
 
   verifications Verification[]
+  posts         Post[]
+
+  // Self-referential category relationships (e.g. Cleaning <-> Laundry),
+  // used for the 5% "related" slice of the discovery feed — see
+  // lib/feed.ts. Stored as one row per pair in RelatedJobCategory; which
+  // side is "A" vs "B" doesn't matter, lib/feed.ts checks both directions.
+  relatedAsA RelatedJobCategory[] @relation("CategoryA")
+  relatedAsB RelatedJobCategory[] @relation("CategoryB")
+}
+
+// One row per related pair. Deliberately not a plain self many-to-many
+// (`related JobCategory[]`) so admin-added relationships can later carry
+// their own metadata (added-by, strength, etc.) without a schema change —
+// and because Prisma's implicit many-to-many doesn't support a composite
+// unique constraint the way this explicit join does.
+model RelatedJobCategory {
+  id           String      @id @default(cuid())
+  categoryAId  String
+  categoryA    JobCategory @relation("CategoryA", fields: [categoryAId], references: [id])
+  categoryBId  String
+  categoryB    JobCategory @relation("CategoryB", fields: [categoryBId], references: [id])
+  createdAt    DateTime    @default(now())
+
+  @@unique([categoryAId, categoryBId])
 }
 
 // A verification submission: either "prove this account is a real business"
@@ -268,12 +276,48 @@ model Verification {
   jobCategoryId    String? // set when type = JOB_CATEGORY
   jobCategory      JobCategory?        @relation(fields: [jobCategoryId], references: [id])
   status           VerificationStatus  @default(PENDING)
-  documents        String[] // URLs to uploaded ID/proof-of-business/certification documents
+  documents        Json // StoredVerificationDocument[] shape — [{ title, url }], see lib/json.ts
   notes            String? // submitter's own notes, if any
   rejectionReason  String?
   reviewedBy       String? // reviewing admin's AccountProfile.id
   submittedAt      DateTime            @default(now())
   reviewedAt       DateTime?
+}
+
+// ----------------------------------------------------------------------------
+// Discovery posts + weighted feed
+// ----------------------------------------------------------------------------
+
+// A lightweight "I need X" / "I offer X" post, tagged to an admin-curated
+// JobCategory. Deliberately separate from ErrandRequest/RFQ/CatalogItem —
+// those are transactional (accept/quote/pay a specific job), this is pure
+// discovery: "who's out there needing or offering this kind of work". A
+// post can exist with no transaction ever happening against it. See
+// lib/feed.ts for how NEED/OFFER posts get mixed into the weighted feed.
+enum PostType {
+  NEED // "I need this service" — posted by whoever selected "need a service"
+  OFFER // "I offer this service" — posted by whoever selected "provide a service"
+}
+
+enum PostStatus {
+  OPEN
+  CLOSED
+}
+
+model Post {
+  id          String      @id @default(cuid())
+  type        PostType
+  authorId    String
+  author      AccountProfile @relation(fields: [authorId], references: [id])
+  categoryId  String
+  category    JobCategory @relation(fields: [categoryId], references: [id])
+  title       String
+  description String
+  tags        String[] // free-text, author-supplied — used for the "related" feed slice alongside category relationships
+  location    Json // Location shape, see lib/validation/shared.ts
+  status      PostStatus  @default(OPEN)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
 }
 
 // ----------------------------------------------------------------------------
@@ -369,7 +413,7 @@ model CleaningBooking {
   providerId     String // must resolve to the single active CLEANING_PROVIDER profile
   provider       AccountProfile         @relation("CleaningProvider", fields: [providerId], references: [id])
   serviceScope   CleaningServiceScope
-  address        Json // Location shape
+  address        Json? // Location shape
   scheduledDate  DateTime
   notes          String?
   price          Float?
@@ -593,10 +637,10 @@ model PayoutMethod {
   id                    String         @id @default(cuid())
   accountProfileId      String
   accountProfile        AccountProfile @relation(fields: [accountProfileId], references: [id])
-  provider              PaymentGateway
+  provider              PaymentGateway? // legacy/unused: payouts are manual now (admin pays by bank transfer), no gateway recipient is registered
   accountName           String
   accountNumber         String
-  bankCode              String
+  bankCode              String // UK sort code (e.g. "20-00-00") for a UK account
   bankName              String
   currency              String         @default("GBP")
   isDefault             Boolean        @default(false)
@@ -627,15 +671,17 @@ model Withdrawal {
   id               String           @id @default(cuid())
   accountProfileId String
   accountProfile   AccountProfile   @relation(fields: [accountProfileId], references: [id])
-  provider         PaymentGateway
+  provider         PaymentGateway? // legacy/unused: payouts are manual now
   payoutMethodId   String
   payoutMethod     PayoutMethod     @relation(fields: [payoutMethodId], references: [id])
   amount           Float
   currency         String           @default("GBP")
   status           WithdrawalStatus @default(PENDING)
   reference        String           @unique
-  providerTransferId String?
-  failureReason    String?
+  providerTransferId String? // legacy/unused: only set by the old automated-transfer flow
+  failureReason    String? // rejection reason, when an admin rejects a request
+  payoutReference  String? // the bank transfer reference an admin enters when marking it paid
+  processedBy      String? // the admin's AccountProfile.id who completed/rejected it
   processedAt      DateTime?
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt

@@ -4,10 +4,14 @@ import prisma from "@/lib/prisma";
 import { requireAuth } from "@/lib/guard";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { createWithdrawalSchema } from "@/lib/validation/wallet";
-import { getGatewayAdapter } from "@/lib/payments";
-import { markWithdrawalProcessing, resolveWithdrawal } from "@/lib/withdrawalService";
 import { parsePagination } from "@/lib/pagination";
 
+// Withdrawals are MANUAL: this creates a PENDING request and reserves the
+// funds; it does not call any payment gateway. Support/admin pulls the
+// pending list (GET /api/admin/withdrawals?status=PENDING, optionally
+// &format=csv for a printable sheet), pays each one by bank transfer
+// outside the system, then marks it paid or rejects it via
+// POST /api/admin/withdrawals/{id}/complete | /reject.
 export async function POST(request: NextRequest) {
   try {
     const auth = await requireAuth(request);
@@ -22,15 +26,11 @@ export async function POST(request: NextRequest) {
     if (payoutMethod.accountProfileId !== auth.accountProfileId) {
       throw new ApiError(403, "You do not own this payout method.");
     }
-    if (!payoutMethod.providerRecipientCode) {
-      throw new ApiError(409, "This payout method is not fully registered with its provider yet.");
-    }
 
-    // Funds are reserved (debited) the moment a withdrawal is created, not
-    // when it eventually completes — this is what makes "insufficient
-    // balance" checks race-safe (two concurrent withdrawal requests can't
-    // both succeed against the same balance) and is why a failed transfer
-    // must explicitly refund (see resolveWithdrawal).
+    // Funds are reserved (debited) the moment a request is created — this
+    // is what makes "insufficient balance" race-safe (two concurrent
+    // requests can't both succeed against the same balance), and why a
+    // rejection must explicitly refund (see resolveWithdrawal).
     const reference = `wd_${randomUUID()}`;
     const withdrawal = await prisma.$transaction(async (tx) => {
       const profile = await tx.accountProfile.findUnique({ where: { id: auth.accountProfileId } });
@@ -40,7 +40,6 @@ export async function POST(request: NextRequest) {
       const created = await tx.withdrawal.create({
         data: {
           accountProfileId: auth.accountProfileId,
-          provider: payoutMethod.provider,
           payoutMethodId: payoutMethod.id,
           amount,
           currency: payoutMethod.currency,
@@ -60,7 +59,7 @@ export async function POST(request: NextRequest) {
           type: "WITHDRAWAL",
           amount,
           balanceAfter: updatedProfile.walletBalance,
-          description: `Withdrawal to ${payoutMethod.bankName} (${payoutMethod.accountNumber.slice(-4).padStart(payoutMethod.accountNumber.length, "*")})`,
+          description: `Withdrawal request to ${payoutMethod.bankName} (${payoutMethod.accountNumber.slice(-4).padStart(payoutMethod.accountNumber.length, "*")})`,
           relatedWithdrawalId: created.id,
         },
       });
@@ -68,38 +67,7 @@ export async function POST(request: NextRequest) {
       return created;
     });
 
-    const adapter = getGatewayAdapter(payoutMethod.provider);
-    try {
-      const result = await adapter.initiateTransfer({
-        amount,
-        currency: payoutMethod.currency,
-        reference,
-        reason: `Anyrun wallet withdrawal for ${auth.accountProfileId}`,
-        recipient: {
-          accountName: payoutMethod.accountName,
-          accountNumber: payoutMethod.accountNumber,
-          bankCode: payoutMethod.bankCode,
-          providerRecipientCode: payoutMethod.providerRecipientCode,
-        },
-      });
-
-      if (result.success) {
-        await markWithdrawalProcessing(withdrawal.id, result.providerTransferId);
-      } else {
-        await resolveWithdrawal(withdrawal.id, {
-          success: false,
-          reason: result.failureReason ?? "Gateway rejected the transfer.",
-        });
-      }
-    } catch (err) {
-      await resolveWithdrawal(withdrawal.id, {
-        success: false,
-        reason: err instanceof Error ? err.message : "Unknown transfer error.",
-      });
-    }
-
-    const final = await prisma.withdrawal.findUnique({ where: { id: withdrawal.id } });
-    return NextResponse.json({ withdrawal: final }, { status: 201 });
+    return NextResponse.json({ withdrawal }, { status: 201 });
   } catch (err) {
     return handleApiError(err);
   }

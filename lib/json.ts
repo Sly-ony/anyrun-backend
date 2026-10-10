@@ -1,4 +1,4 @@
-import type { LocationInput } from "./validation/shared";
+import type { LocationInput, AddressInput, VerificationDocumentInput } from "./validation/shared";
 
 /**
  * Prisma's MongoDB composite types gave us strongly-typed embedded objects;
@@ -39,4 +39,12 @@ export interface StoredQuotationLineItem {
 
 export function asQuotationLineItems(value: unknown): StoredQuotationLineItem[] {
   return (value as StoredQuotationLineItem[] | null | undefined) ?? [];
+}
+
+export function asAddress(value: unknown): AddressInput {
+  return value as AddressInput;
+}
+
+export function asVerificationDocuments(value: unknown): VerificationDocumentInput[] {
+  return (value as VerificationDocumentInput[] | null | undefined) ?? [];
 }
