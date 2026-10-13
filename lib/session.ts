@@ -1,15 +1,20 @@
-import jwt , { SignOptions } from "jsonwebtoken";
+import jwt from "jsonwebtoken";
 import { NextRequest, NextResponse } from "next/server";
 import type { AccountType } from "@prisma/client";
 
-const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN ?? "30d";
 export const SESSION_COOKIE_NAME = "anyrun_session";
 
-if (!JWT_SECRET) {
-  // Fail loudly at import time in any environment that forgot to set this —
-  // better than silently signing tokens with `undefined`.
-  throw new Error("JWT_SECRET environment variable is not set.");
+// Checked at the moment of use, not at import time. An import-time throw
+// fails `next build` on any machine that doesn't have the secret in its
+// environment (a Docker build stage, CI, a preview deploy) because Next
+// evaluates route modules while collecting page data. This still refuses to
+// ever sign or verify with an undefined secret — it just fails on the first
+// real request instead of breaking the build.
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error("JWT_SECRET environment variable is not set.");
+  return secret;
 }
 
 export interface SessionPayload {
@@ -19,16 +24,21 @@ export interface SessionPayload {
 }
 
 export function signSession(payload: SessionPayload): string {
-  const options: SignOptions = {
-    expiresIn: JWT_EXPIRES_IN as SignOptions["expiresIn"],
-  };
-  return jwt.sign(payload, JWT_SECRET as string, options);
+  return jwt.sign(payload, getJwtSecret(), {
+    // JWT_EXPIRES_IN is a plain env string like "30d"; newer @types/jsonwebtoken
+    // type this as a branded duration string, hence the cast.
+    expiresIn: JWT_EXPIRES_IN as jwt.SignOptions["expiresIn"],
+  });
 }
 
 /** Returns the decoded payload, or null if the token is missing/invalid/expired. */
 export function verifySession(token: string): SessionPayload | null {
+  // Resolved outside the try/catch on purpose: a missing secret is a server
+  // misconfiguration and must surface as an error, not be swallowed into
+  // "invalid token" (which would silently log everyone out with a 401).
+  const secret = getJwtSecret();
   try {
-    return jwt.verify(token, JWT_SECRET as string) as SessionPayload;
+    return jwt.verify(token, secret) as SessionPayload;
   } catch {
     return null;
   }

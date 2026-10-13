@@ -28,21 +28,33 @@ export async function POST(request: NextRequest, { params }: Params) {
     });
     const { decision, rejectionReason } = reviewVerificationSchema.parse(body);
 
-    const updated = await prisma.verification.update({
-      where: { id },
-      data: {
-        status: decision,
-        rejectionReason: decision === "REJECTED" ? rejectionReason : null,
-        reviewedBy: auth.accountProfileId,
-        reviewedAt: new Date(),
-      },
+    const updated = await prisma.$transaction(async (tx) => {
+      const updated = await tx.verification.update({
+        where: { id },
+        data: {
+          status: decision,
+          rejectionReason: decision === "REJECTED" ? rejectionReason : null,
+          reviewedBy: auth.accountProfileId,
+          reviewedAt: new Date(),
+        },
+      });
+      if (verification.type === "PROVIDER_COMPLIANCE") {
+        await tx.accountProfile.update({
+          where: { id: verification.accountProfileId },
+          data: { canProvideServices: decision === "APPROVED" },
+        });
+      }
+      return updated;
     });
 
-    const label =
-      verification.type === "BUSINESS"
-        ? "business"
-        : (await prisma.jobCategory.findUnique({ where: { id: verification.jobCategoryId! } }))
-            ?.name ?? "job category";
+    let label = "job category";
+    if (verification.type === "BUSINESS") label = "business";
+    else if (verification.type === "PROVIDER_COMPLIANCE") label = "VAT and insurance";
+    else if (verification.jobCategoryId) {
+      label =
+        (await prisma.jobCategory.findUnique({ where: { id: verification.jobCategoryId } }))
+          ?.name ?? label;
+    }
 
     try {
       await notifyVerificationReviewed(

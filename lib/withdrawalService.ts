@@ -1,13 +1,8 @@
+import type { WithdrawalStatus } from "@prisma/client";
 import prisma from "./prisma";
 import { notifyWithdrawalUpdate } from "./notificationService";
 
-import { WithdrawalStatus } from "@prisma/client"; // 1. Import the Prisma enum
-
-// 2. Explicitly cast the array as WithdrawalStatus[]
-const TERMINAL_STATUSES: WithdrawalStatus[] = [
-  WithdrawalStatus.COMPLETED, 
-  WithdrawalStatus.FAILED
-];
+const TERMINAL_STATUSES: WithdrawalStatus[] = ["COMPLETED", "FAILED"];
 
 export async function markWithdrawalProcessing(withdrawalId: string, providerTransferId: string) {
   const result = await prisma.withdrawal.updateMany({

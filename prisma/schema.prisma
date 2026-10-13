@@ -1,6 +1,7 @@
 // ============================================================================
 // Anyrun — Prisma Schema (PostgreSQL / Supabase)
 
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -43,6 +44,7 @@ enum AdminRole {
 enum VerificationType {
   BUSINESS // proves the account is a legitimate business
   JOB_CATEGORY // proves eligibility to do a specific kind of job (see JobCategory)
+  PROVIDER_COMPLIANCE // VAT number + business insurance, for anyone who provides a service
 }
 
 enum VerificationStatus {
@@ -162,6 +164,9 @@ model AccountProfile {
   address Json?
   businessName  String? // required if accountKind = BUSINESS
   businessAddress Json? // required if accountKind = BUSINESS — same AddressInput shape as `address`
+    vatNumber            String?  // step 3, providers only
+  insuranceDocumentUrl String?  // step 3, providers only (Vercel Blob URL)
+  canProvideServices   Boolean  @default(false) // set true only when admin approves PROVIDER_COMPLIANCE
   serviceRegions Json     @default("[]") // Location[] shape, see lib/validation/shared.ts — regions this runner/supplier actively serves
   isActive      Boolean       @default(true) // false = suspended (see suspension fields) or the CLEANING_PROVIDER singleton gate
   adminRole     AdminRole? // null = not an admin. First one is bootstrapped via prisma/seed.ts; SUPER_ADMIN grants the rest via POST /api/admin/admins

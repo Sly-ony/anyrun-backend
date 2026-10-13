@@ -1,5 +1,5 @@
+import type { Prisma } from "@prisma/client";
 import prisma from "./prisma";
-import { Prisma } from "@prisma/client"; // 1. Import Prisma client types
 
 export async function logAdminAction(
   adminId: string,
@@ -10,13 +10,7 @@ export async function logAdminAction(
 ): Promise<void> {
   try {
     await prisma.adminAuditLog.create({
-      data: { 
-        adminId, 
-        action, 
-        targetType, 
-        targetId, 
-        metadata: metadata as unknown as Prisma.InputJsonValue // 2. Cast metadata here
-      },
+      data: { adminId, action, targetType, targetId, metadata: metadata as Prisma.InputJsonValue | undefined },
     });
   } catch (e) {
     // Never let audit logging itself break the action it's recording.

@@ -6,6 +6,7 @@ import { ApiError, handleApiError } from "@/lib/apiError";
 import { createRfqSchema } from "@/lib/validation/rfq";
 import { RFQ_BUYER_ROLES, SUPPLIER_ROLE } from "@/lib/roles";
 import { anyRegionMatch } from "@/lib/region";
+import { asLocationArray } from "@/lib/json";
 import { parsePagination } from "@/lib/pagination";
 import { notifyNewRfq } from "@/lib/notificationService";
 import { hasApprovedBusinessVerification } from "@/lib/verificationRules";
@@ -77,8 +78,7 @@ export async function GET(request: NextRequest) {
           where: { id: auth.accountProfileId },
           select: { serviceRegions: true },
         });
-        // Cast the JsonValue to an array type so TS knows .length exists and anyRegionMatch accepts it
-        const regions = (profile?.serviceRegions as unknown as any[]) ?? [];
+        const regions = asLocationArray(profile?.serviceRegions);
         if (regions.length > 0) {
           clauses.push(anyRegionMatch("region", regions));
         }
