@@ -131,6 +131,10 @@ enum PaymentSourceType {
   DELIVERY_JOB
   CLEANING_BOOKING
 }
+enum AccountSource {
+  USER  // registered by the account holder
+  ADMIN // created by a super admin from the dashboard
+}
 
 // ----------------------------------------------------------------------------
 // Core identity
@@ -177,6 +181,9 @@ model AccountProfile {
   suspensionReason String? // set by a SUPPORT/DEVELOPER/SUPER_ADMIN admin
   suspendedAt   DateTime?
   suspendedBy   String? // the admin's AccountProfile.id
+  source           AccountSource @default(USER)
+  createdByAdminId String?  // the super admin's AccountProfile.id, when source = ADMIN
+  deletedAt        DateTime? // soft delete (admin-added businesses only)
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
