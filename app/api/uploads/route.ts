@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
     const pathname = `uploads/${auth.accountProfileId}/${Date.now()}-${safeName}`;
 
     const blob = await put(pathname, file, {
-      access: "public",
+      access: "private",
       addRandomSuffix: true,
     });
 
