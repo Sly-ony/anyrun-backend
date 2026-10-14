@@ -50,8 +50,6 @@ command is more explicit about why it's there).
    ```
    npx prisma db seed
    ```
-   This project uses the new `prisma.config.ts` (not a `package.json`
-   `"prisma"` key) to point `db seed` at `tsx prisma/seed.ts`.
 5. Run the app:
    ```
    npm run dev
@@ -154,8 +152,7 @@ app/api/
     errands/, orders/, revenue/, deposits/, withdrawals/  Read-only platform-wide views (VIEW_PLATFORM_DATA)
 ```
 
-## Wallet & payments (Paystack / Flutterwave)
-
+## Wallet & payments
 Every account has a GBP wallet balance, funded by deposits and by earnings
 auto-credited when an errand/RFQ/catalog/cleaning/delivery payment succeeds.
 Full reference in `docs/USER_API.md` section 13 ("Wallet").
