@@ -1,31 +1,15 @@
 /**
- * Seeds three independent things:
+ * Seeds two independent things:
  *
- * 1. The one reserved CLEANING_PROVIDER account — the founder's own facility
- *    management / cleaning company (can't be created through the normal
- *    sign-up API — that's the point of it being reserved).
- * 2. (Optional) the first SUPER_ADMIN account — there is no self-service way
- *    to become an admin, so someone has to be bootstrapped directly in the
- *    database. Once it exists, that super admin grants EDITOR/SUPPORT/
- *    DEVELOPER roles to other accounts via POST /api/admin/admins — see
- *    docs/ADMIN_API.md.
- * 3. A starter JobCategory list — so there's something to select from at
- *    sign-up without hand-entering categories one at a time via
- *    POST /api/admin/job-categories. Idempotent (upsert by name), safe to
- *    re-run.
+ * 1. (Optional) the first SUPER_ADMIN account. Set ADMIN_EMAIL / ADMIN_PASSWORD /
+ *    ADMIN_NAME to create it. Once it exists, that super admin adds other
+ *    admins and businesses from the dashboard (see docs/ADMIN_API.md).
+ * 2. A starter JobCategory list. Idempotent (upsert by name), safe to re-run.
  *
  * Run with: npx prisma db seed
- *
- * Configure via env vars before running:
- *   CLEANING_PROVIDER_EMAIL      (required)
- *   CLEANING_PROVIDER_PASSWORD   (required — a real password, not a placeholder)
- *   CLEANING_PROVIDER_NAME       (default: "Anyrun Cleaning Services")
- *   CLEANING_PROVIDER_PHONE      (optional)
- *   CLEANING_PROVIDER_ADDRESS_* (see seedCleaningProvider below — all optional, sensible UK placeholder defaults)
- *   ADMIN_EMAIL                  (optional — skips admin seeding if unset)
- *   ADMIN_PASSWORD               (required if ADMIN_EMAIL is set)
- *   ADMIN_NAME                   (default: "Platform Admin")
  */
+
+
 import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -43,68 +27,14 @@ const prisma = new PrismaClient({ adapter });
 // afterward via PATCH /api/account.
 function placeholderAddress() {
   return {
-    addressLine1: process.env.CLEANING_PROVIDER_ADDRESS_LINE1 ?? "1 Example Street",
-    city: process.env.CLEANING_PROVIDER_ADDRESS_CITY ?? "London",
-    state: process.env.CLEANING_PROVIDER_ADDRESS_STATE ?? "Greater London",
-    postalCode: process.env.CLEANING_PROVIDER_ADDRESS_POSTCODE ?? "SW1A 1AA",
-    country: process.env.CLEANING_PROVIDER_ADDRESS_COUNTRY ?? "United Kingdom",
+    addressLine1: "1 Example Street",
+    city: "London",
+    state: "Greater London",
+    postalCode: "SW1A 1AA",
+    country: "United Kingdom",
   };
 }
 
-async function seedCleaningProvider() {
-  const email = process.env.CLEANING_PROVIDER_EMAIL;
-  const password = process.env.CLEANING_PROVIDER_PASSWORD;
-  const businessName = process.env.CLEANING_PROVIDER_NAME ?? "Anyrun Cleaning Services";
-  const phone = process.env.CLEANING_PROVIDER_PHONE;
-
-  if (!email || !password) {
-    throw new Error(
-      "CLEANING_PROVIDER_EMAIL and CLEANING_PROVIDER_PASSWORD must be set before seeding."
-    );
-  }
-
-  const existingActive = await prisma.accountProfile.findMany({
-    where: { roles: { has: "CLEANING_PROVIDER" }, isActive: true },
-  });
-
-  if (existingActive.length > 0) {
-    console.log(
-      `Skipping cleaning provider: an active one already exists (accountProfile id ${existingActive[0].id}).`
-    );
-    return;
-  }
-
-  const existingUser = await prisma.user.findUnique({ where: { email } });
-  if (existingUser) {
-    throw new Error(
-      `A user with email ${email} already exists but has no active CLEANING_PROVIDER profile — resolve manually rather than seeding blindly.`
-    );
-  }
-
-  const passwordHash = await bcrypt.hash(password, 10);
-  const address = placeholderAddress();
-
-  const user = await prisma.user.create({
-    data: { email, phone, passwordHash, name: businessName },
-  });
-
-  const profile = await prisma.accountProfile.create({
-    data: {
-      userId: user.id,
-      roles: ["CLEANING_PROVIDER"],
-      accountKind: "BUSINESS",
-      address, // placeholder — update via PATCH /api/account
-      businessName,
-      businessAddress: address, // placeholder too
-      isActive: true,
-      jobCategoryIds: [],
-      serviceRegions: [],
-    },
-  });
-
-  console.log(`Created CLEANING_PROVIDER account: user ${user.id}, profile ${profile.id}`);
-  console.log("  NOTE: seeded with a placeholder address — update it via PATCH /api/account.");
-}
 
 async function seedAdmin() {
   const email = process.env.ADMIN_EMAIL;
@@ -227,7 +157,6 @@ async function seedJobCategories() {
 }
 
 async function main() {
-  await seedCleaningProvider();
   await seedAdmin();
   await seedJobCategories();
 }
