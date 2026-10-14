@@ -5,6 +5,7 @@ import { requireAdminCapability } from "@/lib/adminPermissions";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { manageDisputeSchema } from "@/lib/validation/dispute";
 import { notifyDisputeUpdate } from "@/lib/notificationService";
+import { logAdminAction } from "@/lib/auditLog";
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -52,6 +53,11 @@ export async function POST(request: NextRequest, { params }: Params) {
     } catch (e) {
       console.error("Failed to notify dispute raiser of status change:", e);
     }
+
+    await logAdminAction(auth.accountProfileId, "DISPUTE_UPDATED", "Dispute", id, {
+      status,
+      resolutionNotes: resolutionNotes ?? null,
+    });
 
     return NextResponse.json({ dispute: updated });
   } catch (err) {

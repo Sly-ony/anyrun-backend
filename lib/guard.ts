@@ -64,3 +64,23 @@ export async function getOptionalAuth(request: NextRequest): Promise<AuthContext
     return null;
   }
 }
+
+
+
+/**
+ * Providers must have admin-approved VAT + insurance before they can offer
+ * services. Reads the flag fresh from the DB (not the JWT) so approval or
+ * revocation takes effect immediately.
+ */
+export async function requireCanProvideServices(auth: AuthContext): Promise<void> {
+  const profile = await prisma.accountProfile.findUnique({
+    where: { id: auth.accountProfileId },
+    select: { canProvideServices: true },
+  });
+  if (!profile?.canProvideServices) {
+    throw new ApiError(
+      403,
+      "Your VAT number and business insurance must be submitted and approved before you can provide services."
+    );
+  }
+}

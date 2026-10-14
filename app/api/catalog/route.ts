@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
     });
     const data = createCatalogItemSchema.parse(body);
 
-    if (isReservedCategory(data.category)) {
+    if (await isReservedCategory(data.category)) {
       throw new ApiError(
         400,
         "Cleaning services are exclusively provided through the platform's cleaning booking flow and cannot be listed as a catalog category."

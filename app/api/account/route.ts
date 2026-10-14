@@ -36,7 +36,9 @@ export async function PATCH(request: NextRequest) {
       prisma.accountProfile.update({
         where: { id: auth.accountProfileId },
         data: {
+          ...(data.address !== undefined ? { address: data.address } : {}),
           ...(data.businessName !== undefined ? { businessName: data.businessName } : {}),
+          ...(data.businessAddress !== undefined ? { businessAddress: data.businessAddress } : {}),
           ...(data.serviceRegions !== undefined ? { serviceRegions: data.serviceRegions } : {}),
         },
       }),

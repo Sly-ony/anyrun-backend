@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { ApiError, handleApiError } from "@/lib/apiError";
-import { asLocationArray } from "@/lib/json";
+import { asLocationArray, asAddress } from "@/lib/json";
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -30,6 +30,16 @@ export async function GET(_request: NextRequest, { params }: Params) {
         avatarUrl: user.avatarUrl,
         roles: profile.roles,
         businessName: profile.businessName,
+        // City/state only, never the full street address — same privacy
+        // reasoning as serviceRegions below. Only present for BUSINESS
+        // accounts; an individual's home address is never public at all.
+        businessLocation:
+          profile.accountKind === "BUSINESS" && profile.businessAddress
+            ? (() => {
+                const a = asAddress(profile.businessAddress);
+                return { country: a.country, state: a.state, city: a.city };
+              })()
+            : null,
         serviceRegions: asLocationArray(profile.serviceRegions).map((r) => ({
           country: r.country,
           state: r.state,

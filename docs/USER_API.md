@@ -65,7 +65,9 @@ supplier doesn't miss an opportunity over a city-name mismatch.
   "userId": "65f1a2b3c4d5e6f7a8b9c0d0",
   "roles": ["RUNNER"],
   "accountKind": "INDIVIDUAL",
+  "address": { "addressLine1": "221B Baker Street", "addressLine2": "Flat 3", "city": "London", "state": "Greater London", "postalCode": "NW1 6XE", "country": "United Kingdom", "latitude": null, "longitude": null },
   "businessName": null,
+  "businessAddress": null,
   "serviceRegions": [ { "country": "United Kingdom", "state": "Greater London", "city": "London", "area": "Shoreditch", "postalCode": "E1 6AN", "latitude": 51.5074, "longitude": -0.1278 } ],
   "isActive": true,
   "adminRole": null,
@@ -77,13 +79,15 @@ supplier doesn't miss an opportunity over a city-name mismatch.
   "updatedAt": "2026-09-01T10:00:00.000Z"
 }
 ```
-`roles` is one or more of `INDIVIDUAL_CUSTOMER`, `RUNNER`, `BUSINESS_BUYER`,
-`BUSINESS_SUPPLIER` (never `CLEANING_PROVIDER` — that's seeded, not
-self-selected). `accountKind` (`INDIVIDUAL` or `BUSINESS`) is *derived*
-automatically from `roles` at sign-up — choosing `BUSINESS_BUYER`/
-`BUSINESS_SUPPLIER` makes it `BUSINESS`; it's not a separate question you
-answer. `adminRole`/`suspension*` fields are almost always `null`/`false`
-for a regular account — see `ADMIN_API.md` for what sets them.
+`roles` is derived from `accountKind` + `intent` at sign-up (see
+`POST /api/auth/signup` below), one or more of `INDIVIDUAL_CUSTOMER`,
+`RUNNER`, `BUSINESS_BUYER`, `BUSINESS_SUPPLIER` (never `CLEANING_PROVIDER`
+— that's seeded, not self-selected). `address` is a full street-level
+address (the `AddressInput` shape), required on every account, distinct
+from the looser `Location` shape `serviceRegions` uses. `businessAddress`
+is the same `AddressInput` shape, present only for `accountKind: "BUSINESS"`.
+`adminRole`/`suspension*` fields are almost always `null`/`false` for a
+regular account — see `ADMIN_API.md` for what sets them.
 
 **The sanitized `User` shape** (`passwordHash` and `oauthId` are always
 stripped before a `User` is returned anywhere):
@@ -106,49 +110,91 @@ stripped before a `User` is returned anywhere):
 
 ### `POST /api/auth/signup` *(public)*
 
-**Request body:**
+**Sign-up asks two independent questions, not a direct role pick:**
+`accountKind` (`INDIVIDUAL` or `BUSINESS`) and `intent` (`PROVIDE_SERVICE` —
+"I offer a service" — or `NEED_SERVICE` — "I need a service"), regardless
+of account kind. A business selecting `PROVIDE_SERVICE` goes through the
+exact same admin-curated job-category flow an individual runner does (see
+"Job categories & verification" below) — it is **not** the same thing as
+listing a catalog (`BUSINESS_SUPPLIER`/`POST /api/catalog`), which remains
+a separate thing a business can still do, just not chosen here. `roles` is
+derived server-side from these two answers (see `lib/roles.ts`'s
+`deriveRoles`) — you don't submit `roles` directly anymore. There is
+currently no endpoint to add roles after sign-up, so this is effectively a
+one-time choice.
+
+**Request body (individual, provides a service):**
 ```json
 {
   "email": "jane@example.co.uk",
   "phone": "+447700900000",
   "password": "at-least-8-characters",
   "name": "Jane Doe",
-  "roles": ["RUNNER"],
-  "businessName": null,
+  "accountKind": "INDIVIDUAL",
+  "intent": "PROVIDE_SERVICE",
+  "address": {
+    "addressLine1": "221B Baker Street",
+    "addressLine2": "Flat 3",
+    "city": "London",
+    "state": "Greater London",
+    "postalCode": "NW1 6XE",
+    "country": "United Kingdom"
+  },
   "serviceRegions": [
     { "country": "United Kingdom", "state": "Greater London", "city": "London", "postalCode": "E1 6AN" }
   ]
 }
 ```
-- `phone` is optional. `password` must be ≥ 8 characters. `name` is required.
-- `roles`: 1+ of `INDIVIDUAL_CUSTOMER`, `RUNNER`, `BUSINESS_BUYER`,
-  `BUSINESS_SUPPLIER` — no duplicates. `CLEANING_PROVIDER` is not a valid
-  value here at all (rejected by validation, not just blocked by business
-  logic).
-- `businessName` is **required** if `roles` includes `BUSINESS_BUYER` or
-  `BUSINESS_SUPPLIER`.
-- `serviceRegions` (array of `Location`) is **required** (min 1) if `roles`
-  includes `RUNNER` or `BUSINESS_SUPPLIER`.
+**Request body (business, needs a service):**
+```json
+{
+  "email": "ops@acmecleaning.co.uk",
+  "password": "at-least-8-characters",
+  "name": "Pat Jones",
+  "accountKind": "BUSINESS",
+  "intent": "NEED_SERVICE",
+  "address": { "addressLine1": "10 High Street", "city": "Manchester", "state": "Greater Manchester", "postalCode": "M1 1AE", "country": "United Kingdom" },
+  "businessName": "Acme Estates Ltd",
+  "businessAddress": { "addressLine1": "10 High Street", "city": "Manchester", "state": "Greater Manchester", "postalCode": "M1 1AE", "country": "United Kingdom" },
+  "businessDocuments": [
+    { "title": "Certificate of Incorporation", "url": "https://.../cert.pdf" },
+    { "title": "Proof of Business Address", "url": "https://.../utility-bill.jpg" }
+  ]
+}
+```
+- `phone` is optional. `password` ≥ 8 characters. `name` required.
+- `address` (the `AddressInput` shape — `addressLine1`, optional
+  `addressLine2`, `city`, `state`, `postalCode`, `country` all required
+  except `addressLine2`, plus optional `latitude`/`longitude`) is
+  **required for every account**, individual or business — this is a full
+  street-level address, not the loose city/state `Location` shape used
+  elsewhere (`serviceRegions`, errand locations, etc.).
+- If `accountKind: "BUSINESS"`: **`businessName`, `businessAddress`
+  (same `AddressInput` shape), and `businessDocuments` (min 1, each
+  `{ title, url }`) are all required.** Upload documents via
+  `POST /api/uploads` first, then pass the returned `url`s here.
+  **These documents are submitted as a `BUSINESS` verification
+  automatically** — you do not need to separately call
+  `POST /api/account/business-verification` afterward; that endpoint is
+  only for resubmitting after a rejection.
+- If `intent: "PROVIDE_SERVICE"`: `serviceRegions` (array of the loose
+  `Location` shape, min 1) is required — the broad areas you operate in.
+  Job category selection itself happens **after** sign-up, not here — see
+  "Job categories & verification" below; nothing about category selection
+  blocks login.
 
 **Response — `201`:**
 ```json
 {
-  "user": {
-    "id": "65f1a2b3c4d5e6f7a8b9c0d0",
-    "email": "jane@example.co.uk",
-    "phone": "+447700900000",
-    "oauthProvider": null,
-    "name": "Jane Doe",
-    "avatarUrl": null,
-    "createdAt": "2026-10-01T10:00:00.000Z",
-    "updatedAt": "2026-10-01T10:00:00.000Z"
-  },
+  "user": { "id": "65f1a2b3c4d5e6f7a8b9c0d0", "email": "jane@example.co.uk", "phone": "+447700900000", "oauthProvider": null, "name": "Jane Doe", "avatarUrl": null, "createdAt": "...", "updatedAt": "..." },
   "profile": {
     "id": "65f1a2b3c4d5e6f7a8b9c0d1",
     "userId": "65f1a2b3c4d5e6f7a8b9c0d0",
     "roles": ["RUNNER"],
     "accountKind": "INDIVIDUAL",
+    "address": { "addressLine1": "221B Baker Street", "addressLine2": "Flat 3", "city": "London", "state": "Greater London", "postalCode": "NW1 6XE", "country": "United Kingdom", "latitude": null, "longitude": null },
     "businessName": null,
+    "businessAddress": null,
     "serviceRegions": [
       { "country": "United Kingdom", "state": "Greater London", "city": "London", "area": null, "postalCode": "E1 6AN", "latitude": null, "longitude": null }
     ],
@@ -169,7 +215,7 @@ body too for mobile/native clients that send it back as `Authorization:
 Bearer <token>` instead of relying on cookies.
 
 **Errors:**
-- `400` — zod message, e.g. `{ "error": "Password must be at least 8 characters." }`, `{ "error": "businessName is required for BUSINESS_BUYER or BUSINESS_SUPPLIER roles." }`, `{ "error": "serviceRegions is required for RUNNER or BUSINESS_SUPPLIER roles." }`, `{ "error": "Duplicate roles are not allowed." }`
+- `400` — zod message, e.g. `{ "error": "Password must be at least 8 characters." }`, `{ "error": "businessName is required for a BUSINESS account." }`, `{ "error": "businessAddress is required for a BUSINESS account." }`, `{ "error": "At least one businessDocument ({ title, url }) is required for a BUSINESS account." }`, `{ "error": "serviceRegions is required when intent is PROVIDE_SERVICE." }`
 - `409` — `{ "error": "An account with this email or phone already exists." }`
 
 ---
@@ -221,6 +267,90 @@ No request body.
 
 ---
 
+### `POST /api/auth/password-reset/request` *(public)*
+
+```json
+{ "email": "jane@example.co.uk" }
+```
+
+**Response — `200`:**
+```json
+{ "message": "If an account with that email exists, a password reset link has been sent." }
+```
+**Always the same message, whether or not the email is registered** — this
+is deliberate, so the endpoint can't be used to find out which emails have
+accounts. No real email provider is connected yet (see `lib/email.ts`) — the
+reset link is only logged server-side. Outside `NODE_ENV=production`, the
+response also includes `"devOnlyToken": "<raw token>"` so the flow is
+testable without reading logs; **this field must not exist once a real
+email provider is wired in and the app is actually deployed for real users**.
+
+**Errors:** `400` zod message (invalid email format — note a *malformed*
+email still gets a validation error; only a well-formed-but-unregistered
+one gets the generic success message).
+
+### `POST /api/auth/password-reset/confirm` *(public)*
+
+```json
+{ "token": "a1b2c3d4...", "newPassword": "at-least-8-characters" }
+```
+`token` is the raw value from the reset link's `?token=` query param (or the
+`devOnlyToken` above in non-production).
+
+**Response — `200`:**
+```json
+{ "message": "Password updated. You can now log in with your new password." }
+```
+Using a token invalidates every other outstanding reset request for that
+user, not just the one used — a successful reset closes out all pending
+links.
+
+**Errors:** `400` — `{ "error": "This password reset link is invalid or has expired." }` (covers: token doesn't exist, already used, or past its 1-hour expiry — same message for all three, so an attacker probing tokens can't distinguish "wrong" from "expired").
+
+---
+
+## Uploads — `/api/uploads`
+
+Generic file upload to Vercel Blob Storage, used wherever else in this API
+a field expects a client-supplied URL — verification documents (section 3),
+catalog/advert/blog images, avatars. Upload first, then pass the returned
+`url` into whichever endpoint needs it.
+
+### `POST /api/uploads`
+
+**Request**: `multipart/form-data` with a single `file` field — not JSON.
+```
+POST /api/uploads
+Content-Type: multipart/form-data; boundary=...
+
+------boundary
+Content-Disposition: form-data; name="file"; filename="id-front.jpg"
+Content-Type: image/jpeg
+
+<binary data>
+------boundary--
+```
+
+**Response — `201`:**
+```json
+{
+  "url": "https://xxxxx.public.blob.vercel-storage.com/uploads/65f1a2b3c4d5e6f7a8b9c0d1/1696234567-id-front-ab12cd34.jpg",
+  "pathname": "uploads/65f1a2b3c4d5e6f7a8b9c0d1/1696234567-id-front-ab12cd34.jpg",
+  "contentType": "image/jpeg",
+  "size": 204800
+}
+```
+`url` is what you pass elsewhere (e.g. into `documents` on
+`POST /api/account/business-verification`). Max file size 15MB.
+
+**Errors:**
+- `400` — `{ "error": "No file provided — send it as a 'file' field in multipart/form-data." }`
+- `400` — `{ "error": "Uploaded file is empty." }`
+- `413` — `{ "error": "File exceeds the 15MB limit." }`
+- `500` — `{ "error": "File uploads are not configured on the server (BLOB_READ_WRITE_TOKEN missing)." }` (deployment issue)
+
+---
+
 ## 2. Account — `/api/account`, `/api/accounts`
 
 ### `PATCH /api/account`
@@ -231,12 +361,17 @@ No request body.
   "name": "Jane A. Doe",
   "avatarUrl": "https://files.example.com/avatars/jane.jpg",
   "phone": "+447700900001",
+  "address": { "addressLine1": "10 New Road", "city": "Manchester", "state": "Greater Manchester", "postalCode": "M1 2AB", "country": "United Kingdom" },
   "businessName": "Jane's Deliveries Ltd",
+  "businessAddress": { "addressLine1": "10 New Road", "city": "Manchester", "state": "Greater Manchester", "postalCode": "M1 2AB", "country": "United Kingdom" },
   "serviceRegions": [
     { "country": "United Kingdom", "state": "Greater Manchester", "city": "Manchester" }
   ]
 }
 ```
+`address`/`businessAddress`, when sent, must be the full `AddressInput`
+shape (not a partial patch of individual fields) — it replaces the whole
+address.
 
 **Response — `200`:**
 ```json
@@ -345,23 +480,46 @@ for your own delivery request history instead.
 ## 3. Job categories & verification
 
 Two independent tracks: **business verification** (proves a `BUSINESS`-kind
-account is real; gates posting RFQs and listing catalog items) and
-**job-category verification** (proves a `RUNNER` is eligible for a specific
-kind of job; gates accepting errands in that category).
+account is real; gates posting RFQs and listing catalog items — and is
+usually already handled for you, see below) and **job-category
+verification** (proves a `RUNNER` is eligible for a specific kind of job;
+gates accepting errands in that category and posting an `OFFER` post for it
+— see "Posts & the discovery feed" later in this document).
+
+**Every verification document, everywhere in this API, is now
+`{ "title": "...", "url": "..." }`** — not a bare URL string. Upload the
+file via `POST /api/uploads` (see the "Uploads" section above) to get the
+`url`, then pair it with a human-readable `title` (e.g. `"Driving
+Licence — front"`).
 
 ### `GET /api/job-categories` *(public)*
 
-No request body. The list an individual sees when choosing "get a job."
+No request body. The list shown when choosing "I provide a service."
 
 **Response — `200`:**
 ```json
 {
   "categories": [
-    { "id": "65f1a2b3c4d5e6f7a8b9c0d2", "name": "Furniture moving", "description": "Lifting and transporting furniture.", "requiresVerification": true, "isActive": true, "createdAt": "...", "updatedAt": "..." },
-    { "id": "65f1a2b3c4d5e6f7a8b9c0d3", "name": "Grocery pickup", "description": null, "requiresVerification": false, "isActive": true, "createdAt": "...", "updatedAt": "..." }
+    { "id": "65f1a2b3c4d5e6f7a8b9c0d2", "name": "Cleaning", "description": "Domestic and commercial cleaning.", "requiresVerification": true, "isActive": true, "createdAt": "...", "updatedAt": "..." },
+    { "id": "65f1a2b3c4d5e6f7a8b9c0d3", "name": "Gardening", "description": "Garden maintenance and landscaping.", "requiresVerification": false, "isActive": true, "createdAt": "...", "updatedAt": "..." }
   ]
 }
 ```
+A real starter list ships via `prisma/seed.ts` (electrician, plumber,
+cleaning, delivery, makeup artist, childcare, and more) — see `README.md`.
+
+### `GET /api/job-categories/{id}/related` *(public)*
+
+Admin-curated related categories (e.g. "Cleaning" related to "Gardening")
+— this is what feeds the 5% "related" slice of the discovery feed. No
+request body.
+
+**Response — `200`:**
+```json
+{ "related": [ { "id": "65f1a2b3c4d5e6f7a8b9c0d3", "name": "Gardening", "description": "...", "requiresVerification": false, "isActive": true, "createdAt": "...", "updatedAt": "..." } ] }
+```
+Managing these relationships (adding/removing) is admin-only — see
+`ADMIN_API.md`.
 
 ---
 
@@ -370,20 +528,28 @@ No request body. The list an individual sees when choosing "get a job."
 `RUNNER`-only. Selects which categories you want to work in. **Every
 selected category that requires verification must have documents supplied
 in this same call** — selecting two verification-gated categories means
-submitting proof for both at once, not one at a time.
+submitting proof for both at once, not one at a time. **You can select
+multiple categories at once**, verification-gated or not, in any mix.
 
 **Request body:**
 ```json
 {
   "jobCategoryIds": ["65f1a2b3c4d5e6f7a8b9c0d2", "65f1a2b3c4d5e6f7a8b9c0d3"],
   "verificationDocuments": {
-    "65f1a2b3c4d5e6f7a8b9c0d2": ["https://files.example.com/id-front.jpg", "https://files.example.com/id-back.jpg"]
+    "65f1a2b3c4d5e6f7a8b9c0d2": [
+      { "title": "ID — front", "url": "https://.../id-front.jpg" },
+      { "title": "ID — back", "url": "https://.../id-back.jpg" }
+    ]
   }
 }
 ```
 `verificationDocuments` is keyed by `jobCategoryId`, only required for the
 categories that actually `requiresVerification: true` (here, `...0d3`
-"Grocery pickup" needs none, so it's omitted).
+"Gardening" needs none, so it's omitted). **Selecting a category you're not
+yet verified for doesn't block you from anything else** — you can still
+accept errands or post `OFFER`s in every *other* category you've selected
+or that doesn't require verification; only that specific category is
+gated until it clears review.
 
 **Response — `200`:**
 ```json
@@ -443,7 +609,10 @@ job-category verification records.
       "type": "JOB_CATEGORY",
       "jobCategoryId": "65f1a2b3c4d5e6f7a8b9c0d2",
       "status": "PENDING",
-      "documents": ["https://files.example.com/id-front.jpg", "https://files.example.com/id-back.jpg"],
+      "documents": [
+        { "title": "ID — front", "url": "https://files.example.com/id-front.jpg" },
+        { "title": "ID — back", "url": "https://files.example.com/id-back.jpg" }
+      ],
       "notes": null,
       "rejectionReason": null,
       "reviewedBy": null,
@@ -462,12 +631,19 @@ summary shape returned by the `POST` above).
 
 ### `POST /api/account/business-verification`
 
-Only for `accountKind: "BUSINESS"` accounts.
+Only for `accountKind: "BUSINESS"` accounts. **You usually don't need this
+at all** — business documents are collected at sign-up
+(`businessDocuments` on `POST /api/auth/signup`) and submitted for review
+automatically. This endpoint exists for **resubmitting after a rejection**
+(or adding documents if somehow none were recorded) — it 409s if you
+already have a `PENDING` or `APPROVED` business verification.
 
 **Request body:**
 ```json
 {
-  "documents": ["https://files.example.com/certificate-of-incorporation.pdf"],
+  "documents": [
+    { "title": "Certificate of Incorporation", "url": "https://files.example.com/certificate-of-incorporation.pdf" }
+  ],
   "notes": "Companies House number 12345678"
 }
 ```
@@ -482,7 +658,7 @@ Only for `accountKind: "BUSINESS"` accounts.
     "type": "BUSINESS",
     "jobCategoryId": null,
     "status": "PENDING",
-    "documents": ["https://files.example.com/certificate-of-incorporation.pdf"],
+    "documents": [{ "title": "Certificate of Incorporation", "url": "https://files.example.com/certificate-of-incorporation.pdf" }],
     "notes": "Companies House number 12345678",
     "rejectionReason": null,
     "reviewedBy": null,
@@ -508,7 +684,7 @@ job-category), newest first.
 ```json
 {
   "verifications": [
-    { "id": "65f1a2b3c4d5e6f7a8b9c100", "accountProfileId": "65f1a2b3c4d5e6f7a8b9c0e2", "type": "BUSINESS", "jobCategoryId": null, "status": "PENDING", "documents": ["https://files.example.com/certificate-of-incorporation.pdf"], "notes": "Companies House number 12345678", "rejectionReason": null, "reviewedBy": null, "submittedAt": "2026-10-01T11:15:00.000Z", "reviewedAt": null }
+    { "id": "65f1a2b3c4d5e6f7a8b9c100", "accountProfileId": "65f1a2b3c4d5e6f7a8b9c0e2", "type": "BUSINESS", "jobCategoryId": null, "status": "PENDING", "documents": [{ "title": "Certificate of Incorporation", "url": "https://files.example.com/certificate-of-incorporation.pdf" }], "notes": "Companies House number 12345678", "rejectionReason": null, "reviewedBy": null, "submittedAt": "2026-10-01T11:15:00.000Z", "reviewedAt": null }
   ]
 }
 ```
@@ -1626,7 +1802,13 @@ No request body.
 Every account has a running GBP wallet balance (`AccountProfile.walletBalance`,
 also returned by `GET /api/auth/me`'s `profile`). It's funded two ways:
 
-1. **Deposits** — you top it up yourself via Paystack or Flutterwave.
+1. **Deposits** — you top it up yourself by card through the payment
+   gateway. **The gateway is currently Paystack (with Flutterwave also
+   wired in) as a placeholder** — the business owner hasn't made a final
+   choice yet, and Stripe (card + Apple Pay, the likely UK option) may
+   replace it. The gateway sits behind a single adapter interface
+   (`lib/payments/`), so swapping is a contained backend change and the
+   deposit endpoints below shouldn't change shape when it happens.
 2. **Earnings** — automatically, in full, whenever one of your `.../pay`
    endpoints elsewhere in this document succeeds and you're the payee: the
    errand/RFQ/catalog/cleaning flows in sections 4–7 all credit your wallet
@@ -1642,38 +1824,37 @@ and (once that integration is built) spend from it; today the wallet is
 mainly how earnings accumulate for withdrawal. This is a known gap, not an
 oversight — ask if you want wallet-funded checkout built next.
 
-**Currency caveat**: Paystack does not support GBP settlement or UK bank
-payouts as of this writing (its core markets are NGN/GHS/ZAR/KES) — deposits
-and withdrawals through Paystack will likely fail for a GBP-denominated
-account unless your merchant account is specifically approved otherwise.
-Flutterwave has broader reach but exact currency/corridor support still
-depends on what's enabled for your account. Confirm with each gateway
-directly before relying on either for real money movement.
+**Currency caveat (deposits only)**: Paystack does not support GBP
+settlement as of this writing (its core markets are NGN/GHS/ZAR/KES), so
+GBP deposits through it will likely fail unless the merchant account is
+specifically approved for it — one of the reasons Stripe is being
+considered. Flutterwave has broader reach but exact currency support still
+depends on what's enabled on the account. Confirm with the gateway before
+real money moves. **Withdrawals don't touch any gateway** — they're manual
+(see Withdrawals below), so this caveat doesn't apply to them.
 
 ### Payout methods — `/api/account/payout-methods`
 
-A saved bank account withdrawals pay out to. Creating one immediately
-registers a transfer recipient with the chosen gateway.
+A saved bank account that withdrawals are paid out to. **Payouts are
+manual** (an admin sends the bank transfer by hand — see Withdrawals
+below), so this is just stored bank details; no payment gateway is
+contacted or needs registering with.
 
 #### `POST /api/account/payout-methods`
 
 **Request body:**
 ```json
 {
-  "provider": "PAYSTACK",
   "accountName": "Jane Doe",
-  "accountNumber": "0123456789",
-  "bankCode": "058",
-  "bankName": "GTBank",
+  "accountNumber": "12345678",
+  "bankCode": "20-00-00",
+  "bankName": "Barclays",
   "currency": "GBP",
   "isDefault": true
 }
 ```
-`currency` defaults to `"GBP"`; `isDefault` defaults to `false` (setting it
-unsets any previous default for this account). `bankCode` is whatever the
-chosen gateway's bank-list endpoint uses to identify the bank — not
-documented here since fetching that list isn't yet wrapped by this API; for
-now, get it directly from the gateway's own bank-list endpoint/docs.
+`bankCode` is the UK **sort code**. `currency` defaults to `"GBP"`;
+`isDefault` defaults to `false` (setting it unsets any previous default).
 
 **Response — `201`:**
 ```json
@@ -1681,21 +1862,23 @@ now, get it directly from the gateway's own bank-list endpoint/docs.
   "payoutMethod": {
     "id": "65f1a2b3c4d5e6f7a8b9d000",
     "accountProfileId": "65f1a2b3c4d5e6f7a8b9c0d1",
-    "provider": "PAYSTACK",
+    "provider": null,
     "accountName": "Jane Doe",
-    "accountNumber": "0123456789",
-    "bankCode": "058",
-    "bankName": "GTBank",
+    "accountNumber": "12345678",
+    "bankCode": "20-00-00",
+    "bankName": "Barclays",
     "currency": "GBP",
     "isDefault": true,
-    "providerRecipientCode": "RCP_abc123xyz",
+    "providerRecipientCode": null,
     "createdAt": "2026-10-02T09:00:00.000Z",
     "updatedAt": "2026-10-02T09:00:00.000Z"
   }
 }
 ```
+(`provider` and `providerRecipientCode` are legacy fields from the old
+automated-transfer design and are always `null` now.)
 
-**Errors:** `400` — `{ "error": "Could not register this account with PAYSTACK: Paystack API error (/transferrecipient): <gateway's message>" }` (bad account number/bank code, or a currency the gateway doesn't support — see the currency caveat above) · zod validation messages for missing fields.
+**Errors:** `400` zod validation messages for missing fields.
 
 #### `GET /api/account/payout-methods`
 
@@ -1707,7 +1890,7 @@ No request body.
 
 **Response — `200`:** `{ "success": true }`
 
-**Errors:** `403` not yours · `409` — `{ "error": "Cannot remove a payout method with a withdrawal still in progress." }`
+**Errors:** `403` not yours · `409` — `{ "error": "Cannot remove a payout method that has withdrawal history — this includes completed ones, kept for records." }`
 
 ---
 
@@ -1816,14 +1999,17 @@ part of how a deposit gets completed, not just a read.
 
 ### Withdrawals — `/api/wallet/withdrawals`
 
+**Withdrawals are manual.** Requesting one immediately reserves the money
+(debits your wallet) and creates a `PENDING` request. No payment gateway is
+involved: support works from the pending list, sends each bank transfer by
+hand, then marks it paid (or rejects it, which refunds you automatically).
+
 #### `POST /api/wallet/withdrawals`
 
 **Request body:**
 ```json
 { "amount": 100.0, "payoutMethodId": "65f1a2b3c4d5e6f7a8b9d000" }
 ```
-The gateway used is whatever provider the referenced payout method was
-registered with — you don't choose it separately here.
 
 **Response — `201`:**
 ```json
@@ -1831,35 +2017,33 @@ registered with — you don't choose it separately here.
   "withdrawal": {
     "id": "65f1a2b3c4d5e6f7a8b9d300",
     "accountProfileId": "65f1a2b3c4d5e6f7a8b9c0d1",
-    "provider": "PAYSTACK",
+    "provider": null,
     "payoutMethodId": "65f1a2b3c4d5e6f7a8b9d000",
     "amount": 100.0,
     "currency": "GBP",
-    "status": "PROCESSING",
+    "status": "PENDING",
     "reference": "wd_7c4e2a1b-...",
-    "providerTransferId": "TRF_abc123",
+    "providerTransferId": null,
     "failureReason": null,
+    "payoutReference": null,
+    "processedBy": null,
     "processedAt": null,
     "createdAt": "2026-10-02T09:20:00.000Z",
     "updatedAt": "2026-10-02T09:20:00.000Z"
   }
 }
 ```
-**Your wallet balance is debited immediately on creation** (visible straight
-away in `GET /api/wallet` and as a `WITHDRAWAL` ledger entry), before the
-gateway has confirmed anything — this is what makes concurrent withdrawal
-requests safe against double-spending the same balance. If the gateway
-later reports failure (via webhook), the amount is automatically credited
-back (`WITHDRAWAL_REVERSAL`) and `status` becomes `FAILED`; you don't need
-to do anything to reclaim it. `status` in the response itself can also come
-back as `FAILED` directly, if the gateway rejected the transfer synchronously
-rather than asynchronously.
+**Your wallet balance is debited immediately on creation** (visible
+straight away in `GET /api/wallet` and as a `WITHDRAWAL` ledger entry) —
+this is what makes concurrent requests safe against double-spending the same
+balance. If support rejects the request, the amount is automatically
+credited back (`WITHDRAWAL_REVERSAL`) and `status` becomes `FAILED` with a
+`failureReason`; you don't need to do anything to reclaim it.
 
 **Errors:**
 - `404` — `{ "error": "Payout method not found." }`
 - `403` — `{ "error": "You do not own this payout method." }`
 - `409` — `{ "error": "Insufficient wallet balance." }`
-- `409` — `{ "error": "This payout method is not fully registered with its provider yet." }`
 
 #### `GET /api/wallet/withdrawals`
 
@@ -1869,9 +2053,145 @@ rather than asynchronously.
 
 **Response — `200`:** `{ "withdrawal": { /* same shape as create */ } }`
 
-`status` values: `PENDING` (just created, transfer not yet accepted by the
-gateway) → `PROCESSING` (gateway accepted it, awaiting its webhook) →
-`COMPLETED` or `FAILED` (terminal; `FAILED` always comes with a refunded
-balance and a `failureReason`).
+`status` values you'll actually see: `PENDING` (waiting for support) →
+`COMPLETED` (paid; `payoutReference` is the bank transfer reference support
+recorded, `processedAt` is when) or `FAILED` (rejected; `failureReason`
+says why, and the money is already back in your wallet). `PROCESSING` exists
+in the enum but is unused by the manual flow.
 
 **Errors:** `404` · `403` — not yours.
+
+
+---
+
+## 14. Posts & the discovery feed — `/api/posts`, `/api/feed`
+
+A lightweight "I need X" / "I offer X" post, tagged to an admin-curated
+job category — **pure discovery**, deliberately separate from errands/RFQs/
+catalog items (those are transactional: accept, quote, pay). A post can
+exist without any transaction ever happening against it. A `NEED` post is
+what someone who selected "I need a service" at sign-up creates; an `OFFER`
+post is what someone who selected "I provide a service" creates to advertise
+a category they provide.
+
+### `POST /api/posts`
+
+**Request body:**
+```json
+{
+  "type": "NEED",
+  "categoryId": "65f1a2b3c4d5e6f7a8b9c0d2",
+  "title": "Need a deep clean for a 2-bed flat",
+  "description": "End-of-tenancy clean, East London, ideally this weekend.",
+  "tags": ["end-of-tenancy", "deep-clean", "east-london"],
+  "location": { "country": "United Kingdom", "state": "Greater London", "city": "London", "postalCode": "E1 6AN" }
+}
+```
+`tags` is optional (free text, author-supplied). `location` is the loose
+`Location` shape, not a full address.
+
+**Rules:**
+- **`NEED`** — any authenticated account can post one for any active category.
+- **`OFFER`** — requires the `RUNNER` role (i.e. you signed up with
+  `intent: "PROVIDE_SERVICE"`), **and** the category must be one you've
+  selected via `POST /api/account/job-categories`, **and** if that category
+  `requiresVerification`, your verification for it must be `APPROVED`
+  first. An unverified category doesn't block any *other* category you've
+  selected from posting.
+
+**Response — `201`:**
+```json
+{
+  "post": {
+    "id": "65f1a2b3c4d5e6f7a8b9d500",
+    "type": "NEED",
+    "authorId": "65f1a2b3c4d5e6f7a8b9c0d1",
+    "categoryId": "65f1a2b3c4d5e6f7a8b9c0d2",
+    "title": "Need a deep clean for a 2-bed flat",
+    "description": "End-of-tenancy clean, East London, ideally this weekend.",
+    "tags": ["end-of-tenancy", "deep-clean", "east-london"],
+    "location": { "country": "United Kingdom", "state": "Greater London", "city": "London", "area": null, "postalCode": "E1 6AN", "latitude": null, "longitude": null },
+    "status": "OPEN",
+    "createdAt": "2026-10-04T09:00:00.000Z",
+    "updatedAt": "2026-10-04T09:00:00.000Z"
+  }
+}
+```
+
+**Errors:**
+- `400` — `{ "error": "Invalid or inactive categoryId." }`
+- `403` — `{ "error": "Only accounts that provide services can post an OFFER." }`
+- `403` — `{ "error": "You can only post an OFFER for a category you've selected via POST /api/account/job-categories." }`
+- `403` — `{ "error": "The \"Cleaning\" category requires verification before you can post an OFFER in it." }`
+
+### `GET /api/posts`
+
+Plain (non-weighted) listing — use `GET /api/feed` below for the actual
+discovery experience. Query params: `mine=true` (your own posts, any
+status), `type` (`NEED`/`OFFER`), `categoryId`, `status` (defaults to
+`OPEN` unless `mine=true`), `page`, `pageSize`.
+
+**Response — `200`:** `{ "items": [ /* Post[] */ ], "page": 1, "pageSize": 20, "total": 1 }`
+
+### `GET /api/posts/{id}` / `PATCH /api/posts/{id}` / `DELETE /api/posts/{id}`
+
+Detail is open to any authenticated account. `PATCH` is author-only, all
+fields optional: `{ "title", "description", "tags", "location", "status" }`
+(`status` is `OPEN`/`CLOSED`). `DELETE` is author-only and a **soft-close**
+(`status: CLOSED`), not a hard delete.
+
+**Errors:** `404` — `{ "error": "Post not found." }` · `403` — `{ "error": "Only the author can edit this post." }`
+
+---
+
+### `GET /api/feed`
+
+The weighted discovery feed for one category — this is the "page where I
+can see people who need electrical work" for an electrician.
+
+Query params: **`categoryId`** (required), `as` (`PROVIDER` or `SEEKER` —
+optional, inferred as `PROVIDER` if `categoryId` is one of your selected
+`jobCategoryIds`, else `SEEKER`), `page`, `pageSize`.
+
+**What you see, by viewpoint** (never your own posts):
+
+| | 70% — primary | 25% — secondary | 5% — related |
+|---|---|---|---|
+| **`PROVIDER`** (you offer this service) | `NEED` posts in this category — prospective customers | `OFFER` posts in this category — other providers like you | posts (either type) in admin-related categories |
+| **`SEEKER`** (you need this service) | `OFFER` posts in this category — prospective providers | `NEED` posts in this category — others needing the same thing | posts (either type) in admin-related categories |
+
+The split is applied **per page**, so `pageSize=20` gives roughly 14/5/1.
+The three groups are **interleaved** into a mixed sequence (weighted
+round-robin), not returned as three stacked blocks. The weights (70/25/5)
+are a single constant in `lib/feed.ts` and easy to retune.
+
+**Response — `200`:**
+```json
+{
+  "items": [
+    { "id": "65f1a2b3c4d5e6f7a8b9d500", "type": "NEED", "authorId": "...", "categoryId": "65f1a2b3c4d5e6f7a8b9c0d2", "title": "Need a deep clean for a 2-bed flat", "description": "...", "tags": ["end-of-tenancy"], "location": { /* ... */ }, "status": "OPEN", "createdAt": "...", "updatedAt": "...", "feedBucket": "primary" },
+    { "id": "65f1a2b3c4d5e6f7a8b9d501", "type": "OFFER", "authorId": "...", "categoryId": "65f1a2b3c4d5e6f7a8b9c0d2", "title": "Professional domestic cleaner, 5 yrs experience", "description": "...", "tags": [], "location": { /* ... */ }, "status": "OPEN", "createdAt": "...", "updatedAt": "...", "feedBucket": "secondary" },
+    { "id": "65f1a2b3c4d5e6f7a8b9d502", "type": "NEED", "authorId": "...", "categoryId": "65f1a2b3c4d5e6f7a8b9c0d3", "title": "Garden tidy-up needed", "description": "...", "tags": [], "location": { /* ... */ }, "status": "OPEN", "createdAt": "...", "updatedAt": "...", "feedBucket": "related" }
+  ],
+  "composition": { "primary": 14, "secondary": 5, "related": 1 },
+  "page": 1,
+  "pageSize": 20,
+  "as": "PROVIDER",
+  "category": { "id": "65f1a2b3c4d5e6f7a8b9c0d2", "name": "Cleaning" }
+}
+```
+Each item carries a `feedBucket` (`"primary"` / `"secondary"` / `"related"`)
+so a UI can badge or section them if it wants to. `composition` is how many
+of each were *requested* for the page — actual counts in `items` can be
+lower if a bucket has fewer matching posts than its quota (e.g. no related
+categories configured yet means the 5% slice is simply empty, not backfilled
+from the others).
+
+**Pagination caveat**: each bucket pages independently using a
+proportionally-scaled offset, so paging is *approximately* stable but not
+guaranteed identical if posts are created/closed between page requests.
+This is the usual tradeoff for a mixed feed without per-bucket cursors.
+
+**Errors:**
+- `400` — `{ "error": "categoryId query param is required." }`
+- `404` — `{ "error": "Job category not found." }`
