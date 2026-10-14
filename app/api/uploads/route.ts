@@ -39,10 +39,21 @@ export async function POST(request: NextRequest) {
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
     const pathname = `uploads/${auth.accountProfileId}/${Date.now()}-${safeName}`;
 
-    const blob = await put(pathname, file, {
-      access: "private",
-      addRandomSuffix: true,
-    });
+    // Documents (VAT, insurance, business papers) go to the private store; everything else
+    // (avatars, catalog photos, errand photos) goes to the public store so <Image> can show it.
+    const isDocument = formData.get("kind") === "document";
+
+    if (!isDocument && !process.env.PUBLIC_READ_WRITE_TOKEN) {
+      throw new ApiError(500, "Public file store is not configured (PUBLIC_READ_WRITE_TOKEN missing).");
+    }
+
+    const blob = await put(
+      pathname,
+      file,
+      isDocument
+        ? { access: "private", addRandomSuffix: true }
+        : { access: "public", addRandomSuffix: true, token: process.env.PUBLIC_READ_WRITE_TOKEN }
+    );
 
     return NextResponse.json(
       {
