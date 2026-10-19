@@ -4,6 +4,7 @@ import { requireAuth } from "@/lib/guard";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { getWeightedFeed, type FeedViewpoint } from "@/lib/feed";
 import { parsePagination } from "@/lib/pagination";
+import { shapePost } from "@/lib/postShape";
 
 export async function GET(request: NextRequest) {
   try {
@@ -36,7 +37,12 @@ export async function GET(request: NextRequest) {
       pageSize,
     });
 
-    return NextResponse.json({ ...feed, as, category: { id: category.id, name: category.name } });
+    return NextResponse.json({
+      ...feed,
+      items: feed.items.map((i) => ({ ...shapePost(i), feedBucket: i.feedBucket })),
+      as,
+      category: { id: category.id, name: category.name },
+    });
   } catch (err) {
     return handleApiError(err);
   }

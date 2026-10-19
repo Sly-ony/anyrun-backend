@@ -7,6 +7,7 @@ import { RUNNER_ROLE } from "@/lib/roles";
 import { hasApprovedCategoryVerification } from "@/lib/verificationRules";
 import { parsePagination } from "@/lib/pagination";
 import type { Prisma } from "@prisma/client";
+import { POST_INCLUDE, shapePost } from "@/lib/postShape";
 
 export async function POST(request: NextRequest) {
   try {
@@ -31,6 +32,10 @@ export async function POST(request: NextRequest) {
       if (!auth.roles.includes(RUNNER_ROLE)) {
         throw new ApiError(403, "Only accounts that provide services can post an OFFER.");
       }
+      // Providers must have admin-approved VAT + insurance (or be an
+      // admin-added business) before they can offer services.
+      
+
       const profile = await prisma.accountProfile.findUnique({ where: { id: auth.accountProfileId } });
       if (!profile?.jobCategoryIds.includes(data.categoryId)) {
         throw new ApiError(
@@ -91,12 +96,18 @@ export async function GET(request: NextRequest) {
 
     const where: Prisma.PostWhereInput = clauses.length ? { AND: clauses } : {};
 
-    const [items, total] = await Promise.all([
-      prisma.post.findMany({ where, orderBy: { createdAt: "desc" }, skip, take }),
+    const [rows, total] = await Promise.all([
+      prisma.post.findMany({
+        where,
+        include: POST_INCLUDE,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+      }),
       prisma.post.count({ where }),
     ]);
 
-    return NextResponse.json({ items, page, pageSize, total });
+    return NextResponse.json({ items: rows.map(shapePost), page, pageSize, total });
   } catch (err) {
     return handleApiError(err);
   }

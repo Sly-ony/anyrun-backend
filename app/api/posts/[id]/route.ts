@@ -3,6 +3,7 @@ import prisma from "@/lib/prisma";
 import { requireAuth } from "@/lib/guard";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { updatePostSchema } from "@/lib/validation/post";
+import { POST_INCLUDE, shapePost } from "@/lib/postShape";
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -12,9 +13,9 @@ export async function GET(request: NextRequest, { params }: Params) {
   const { id } = await params;
   try {
     await requireAuth(request);
-    const post = await prisma.post.findUnique({ where: { id } });
+    const post = await prisma.post.findUnique({ where: { id }, include: POST_INCLUDE });
     if (!post) throw new ApiError(404, "Post not found.");
-    return NextResponse.json({ post });
+    return NextResponse.json({ post: shapePost(post) });
   } catch (err) {
     return handleApiError(err);
   }

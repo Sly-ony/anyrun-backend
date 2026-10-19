@@ -1,6 +1,6 @@
 import prisma from "./prisma";
 import { getRelatedCategoryIds } from "./categoryRelations";
-import type { Post } from "@prisma/client";
+import { POST_INCLUDE, type PostWithRelations } from "./postShape";
 
 // Easy to retune later — see docs/USER_API.md's Feed section for the
 // rationale (sourced from the founder's description: "70% exact match, 25%
@@ -9,7 +9,7 @@ const WEIGHTS = { primary: 0.7, secondary: 0.25, related: 0.05 };
 
 export type FeedViewpoint = "PROVIDER" | "SEEKER";
 
-export interface FeedResult extends Post {
+export interface FeedResult extends PostWithRelations {
   feedBucket: "primary" | "secondary" | "related";
 }
 
@@ -28,7 +28,9 @@ function splitCounts(pageSize: number) {
  * mixed sequence (not three stacked blocks) while still landing on
  * approximately the target 70/25/5 split by the end.
  */
-function interleave(buckets: { items: Post[]; weight: number; bucket: FeedResult["feedBucket"] }[]): FeedResult[] {
+function interleave(
+  buckets: { items: PostWithRelations[]; weight: number; bucket: FeedResult["feedBucket"] }[]
+): FeedResult[] {
   const result: FeedResult[] = [];
   const consumed = buckets.map(() => 0);
   const total = buckets.reduce((sum, b) => sum + b.items.length, 0);
@@ -89,6 +91,7 @@ export async function getWeightedFeed(params: GetFeedParams): Promise<FeedPage> 
   const [primaryPosts, secondaryPosts, relatedPosts] = await Promise.all([
     counts.primary > 0
       ? prisma.post.findMany({
+          include: POST_INCLUDE,
           where: {
             categoryId,
             type: primaryType,
@@ -99,9 +102,10 @@ export async function getWeightedFeed(params: GetFeedParams): Promise<FeedPage> 
           skip: Math.floor(skip * WEIGHTS.primary),
           take: counts.primary,
         })
-      : Promise.resolve([]),
+      : Promise.resolve([] as PostWithRelations[]),
     counts.secondary > 0
       ? prisma.post.findMany({
+          include: POST_INCLUDE,
           where: {
             categoryId,
             type: secondaryType,
@@ -112,9 +116,10 @@ export async function getWeightedFeed(params: GetFeedParams): Promise<FeedPage> 
           skip: Math.floor(skip * WEIGHTS.secondary),
           take: counts.secondary,
         })
-      : Promise.resolve([]),
+      : Promise.resolve([] as PostWithRelations[]),
     counts.related > 0 && relatedCategoryIds.length > 0
       ? prisma.post.findMany({
+          include: POST_INCLUDE,
           where: {
             categoryId: { in: relatedCategoryIds },
             status: "OPEN",
@@ -124,7 +129,7 @@ export async function getWeightedFeed(params: GetFeedParams): Promise<FeedPage> 
           skip: Math.floor(skip * WEIGHTS.related),
           take: counts.related,
         })
-      : Promise.resolve([]),
+      : Promise.resolve([] as PostWithRelations[]),
   ]);
 
   const items = interleave([
