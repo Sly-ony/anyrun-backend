@@ -22,19 +22,7 @@ export async function POST(request: NextRequest) {
       throw new ApiError(400, "One or more job category ids are invalid or inactive.");
     }
 
-    // Every category that requires verification must have documents supplied
-    // right here — selecting several verification-required categories means
-    // verifying all of them, not one at a time.
     const needingVerification = categories.filter((c) => c.requiresVerification);
-    const missingDocs = needingVerification.filter(
-      (c) => !verificationDocuments?.[c.id]?.length
-    );
-    if (missingDocs.length > 0) {
-      throw new ApiError(
-        400,
-        `Verification documents are required for: ${missingDocs.map((c) => c.name).join(", ")}.`
-      );
-    }
 
     const existingVerifications = await prisma.verification.findMany({
       where: {
@@ -42,18 +30,30 @@ export async function POST(request: NextRequest) {
         type: "JOB_CATEGORY",
         jobCategoryId: { in: needingVerification.map((c) => c.id) },
       },
+      orderBy: { submittedAt: "desc" },
     });
+
+    // A category already APPROVED or PENDING needs no new submission; only a
+    // first selection or a past rejection does.
+    const liveFor = (categoryId: string) =>
+      existingVerifications.find((v) => v.jobCategoryId === categoryId && v.status === "APPROVED") ??
+      existingVerifications.find((v) => v.jobCategoryId === categoryId && v.status === "PENDING");
+
+    const needsSubmission = needingVerification.filter((c) => !liveFor(c.id));
+    const missingDocs = needsSubmission.filter((c) => !verificationDocuments?.[c.id]?.length);
+    if (missingDocs.length > 0) {
+      throw new ApiError(
+        400,
+        `Verification documents are required for: ${missingDocs.map((c) => c.name).join(", ")}.`
+      );
+    }
 
     const results: { category: string; jobCategoryId: string; status: string }[] = [];
 
     for (const category of needingVerification) {
-      const existing = existingVerifications.find((v) => v.jobCategoryId === category.id);
-
-      // Already approved — nothing to resubmit. Already pending — leave it
-      // for the admin to review rather than spawning a duplicate. Only a
-      // fresh selection or a past rejection creates a new submission.
-      if (existing && existing.status !== "REJECTED") {
-        results.push({ category: category.name, jobCategoryId: category.id, status: existing.status });
+      const live = liveFor(category.id);
+      if (live) {
+        results.push({ category: category.name, jobCategoryId: category.id, status: live.status });
         continue;
       }
 
@@ -88,14 +88,44 @@ export async function GET(request: NextRequest) {
     const profile = await prisma.accountProfile.findUnique({
       where: { id: auth.accountProfileId },
     });
-    const categories = profile?.jobCategoryIds.length
-      ? await prisma.jobCategory.findMany({ where: { id: { in: profile.jobCategoryIds } } })
+    const ids = profile?.jobCategoryIds ?? [];
+
+    const categories = ids.length
+      ? await prisma.jobCategory.findMany({ where: { id: { in: ids } }, orderBy: { name: "asc" } })
       : [];
     const verifications = await prisma.verification.findMany({
       where: { accountProfileId: auth.accountProfileId, type: "JOB_CATEGORY" },
+      orderBy: { submittedAt: "desc" }, // newest first
     });
 
-    return NextResponse.json({ categories, verifications });
+    const items = categories.map((c) => {
+      const forCategory = verifications.filter((v) => v.jobCategoryId === c.id);
+      const latest = forCategory[0];
+      const approved = forCategory.some((v) => v.status === "APPROVED");
+
+      const verificationStatus = !c.requiresVerification
+        ? "NOT_REQUIRED"
+        : approved
+          ? "APPROVED"
+          : latest
+            ? latest.status
+            : "NOT_SUBMITTED";
+
+      return {
+        id: c.id,
+        name: c.name,
+        description: c.description,
+        requiresVerification: c.requiresVerification,
+        isActive: c.isActive,
+        verificationStatus,
+        isVerified: !c.requiresVerification || approved,
+        verificationId: latest?.id ?? null,
+        rejectionReason:
+          verificationStatus === "REJECTED" ? (latest?.rejectionReason ?? null) : null,
+      };
+    });
+
+    return NextResponse.json({ categories: items, verifications });
   } catch (err) {
     return handleApiError(err);
   }
