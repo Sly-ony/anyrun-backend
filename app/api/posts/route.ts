@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
       }
       // Providers must have admin-approved VAT + insurance (or be an
       // admin-added business) before they can offer services.
-      
+
 
       const profile = await prisma.accountProfile.findUnique({ where: { id: auth.accountProfileId } });
       if (!profile?.jobCategoryIds.includes(data.categoryId)) {
@@ -88,8 +88,11 @@ export async function GET(request: NextRequest) {
     const categoryId = searchParams.get("categoryId") ?? undefined;
     const status = searchParams.get("status") ?? (mine ? undefined : "OPEN");
 
+    const authorId = searchParams.get("authorId") ?? undefined;
+
     const clauses: Prisma.PostWhereInput[] = [];
     if (mine) clauses.push({ authorId: auth.accountProfileId });
+    if (authorId) clauses.push({ authorId });
     if (type) clauses.push({ type: type as Prisma.EnumPostTypeFilter["equals"] });
     if (categoryId) clauses.push({ categoryId });
     if (status) clauses.push({ status: status as Prisma.EnumPostStatusFilter["equals"] });

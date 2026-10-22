@@ -61,7 +61,7 @@ export async function GET(request: NextRequest) {
     if (mine) {
       clauses.push({ customerId: auth.accountProfileId });
     } else if (assignedToMe) {
-      requireRole(auth, [RUNNER_ROLE]);
+      
       clauses.push({ runnerId: auth.accountProfileId });
     } else {
       // Default: the open browse feed, region-scoped for runners so they

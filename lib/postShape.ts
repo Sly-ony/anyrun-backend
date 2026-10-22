@@ -12,16 +12,18 @@ export const POST_INCLUDE = {
       user: { select: { name: true, avatarUrl: true } },
     },
   },
+  _count: { select: { conversations: true } },
 } satisfies Prisma.PostInclude;
 
 export type PostWithRelations = Prisma.PostGetPayload<{ include: typeof POST_INCLUDE }>;
 
 /** Public-safe post shape: category name + a small author card (city/state only, never the street address). */
 export function shapePost(p: PostWithRelations) {
-  const { author, category, ...rest } = p;
+  const { author, category, _count, ...rest } = p;
   const a = author.businessAddress ? asAddress(author.businessAddress) : null;
   return {
     ...rest,
+    applicantCount: _count.conversations,
     category: { id: category.id, name: category.name },
     author: {
       id: author.id,

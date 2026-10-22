@@ -9,11 +9,11 @@ interface Params {
   params: Promise<{ id: string }>;
 }
 
-// The errand model has no single "agreed price" field — customer and runner
-// settle on a final amount over chat — so the payer states it explicitly at
-// payment time rather than us inferring it from the original `budget`.
+// For a job agreed in chat the price is already fixed (errand.agreedPrice), so
+// "amount" is optional and must match it. For older errands with no agreed
+// price, the payer still states the amount explicitly.
 const paySchema = z.object({
-  amount: z.number().positive("Amount must be greater than zero."),
+  amount: z.number().positive("Amount must be greater than zero.").optional(),
 });
 
 export async function POST(request: NextRequest, { params }: Params) {
@@ -41,10 +41,20 @@ export async function POST(request: NextRequest, { params }: Params) {
       throw new ApiError(409, "This errand has already been paid for.");
     }
 
-    const body = await request.json().catch(() => {
-      throw new ApiError(400, "Request body must be valid JSON.");
-    });
-    const { amount } = paySchema.parse(body);
+    const body = await request.json().catch(() => ({}));
+    const parsed = paySchema.parse(body);
+
+    let amount: number;
+    if (errand.agreedPrice != null) {
+      // Agreed in chat: the payer can't change it.
+      if (parsed.amount !== undefined && Math.abs(parsed.amount - errand.agreedPrice) > 0.005) {
+        throw new ApiError(400, `Amount must match the agreed price of ${errand.agreedPrice.toFixed(2)}.`);
+      }
+      amount = errand.agreedPrice;
+    } else {
+      if (parsed.amount === undefined) throw new ApiError(400, "amount is required.");
+      amount = parsed.amount;
+    }
 
     const { order, payment } = await createAndChargeOrder({
       sourceType: "ERRAND",

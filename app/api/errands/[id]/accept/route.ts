@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { requireAuth, requireRole } from "@/lib/guard";
 import { ApiError, handleApiError } from "@/lib/apiError";
-import { RUNNER_ROLE } from "@/lib/roles";
 import { findJobCategoryByName, hasApprovedCategoryVerification } from "@/lib/verificationRules";
 
 interface Params {
@@ -13,7 +12,7 @@ export async function POST(request: NextRequest, { params }: Params) {
   const { id } = await params;
   try {
     const auth = await requireAuth(request);
-    requireRole(auth, [RUNNER_ROLE]);
+   
 
     const errand = await prisma.errandRequest.findUnique({ where: { id } });
     if (!errand) throw new ApiError(404, "Errand request not found.");

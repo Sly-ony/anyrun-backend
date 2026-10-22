@@ -123,6 +123,7 @@ enum NotificationType {
   ACCOUNT_SUSPENDED
   DEPOSIT_UPDATE
   WITHDRAWAL_UPDATE
+  NEW_MESSAGE
   GENERAL
 }
 
@@ -135,6 +136,20 @@ enum AccountSource {
   USER  // registered by the account holder
   ADMIN // created by a super admin from the dashboard
 }
+
+enum MessageType {
+  TEXT
+  PRICE_PROPOSAL
+  SYSTEM
+}
+
+enum ProposalStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  CANCELLED
+}
+
 
 // ----------------------------------------------------------------------------
 // Core identity
@@ -166,6 +181,9 @@ model AccountProfile {
   // only meaningful for a RUNNER/BUSINESS_SUPPLIER — this is "where I am").
   // AddressInput shape, see lib/validation/shared.ts.
   address Json?
+  conversationsAsCustomer Conversation[] @relation("ConversationCustomer")
+  conversationsAsProvider Conversation[] @relation("ConversationProvider")
+  messagesSent            Message[]      @relation("MessageSender")
   businessName  String? // required if accountKind = BUSINESS
   businessAddress Json? // required if accountKind = BUSINESS — same AddressInput shape as `address`
     vatNumber            String?  // step 3, providers only
@@ -277,6 +295,46 @@ model RelatedJobCategory {
   @@unique([categoryAId, categoryBId])
 }
 
+model Conversation {
+  id                 String         @id @default(cuid())
+  // Fixed roles per chat: the customer pays, the provider does the work.
+  customerId         String
+  customer           AccountProfile @relation("ConversationCustomer", fields: [customerId], references: [id])
+  providerId         String
+  provider           AccountProfile @relation("ConversationProvider", fields: [providerId], references: [id])
+  postId             String?
+  post               Post?          @relation(fields: [postId], references: [id])
+  customerLastReadAt DateTime?
+  providerLastReadAt DateTime?
+  lastMessageAt      DateTime       @default(now())
+  createdAt          DateTime       @default(now())
+
+  messages Message[]
+
+  @@unique([customerId, providerId, postId])
+  @@index([customerId, lastMessageAt])
+  @@index([providerId, lastMessageAt])
+}
+
+model Message {
+  id             String          @id @default(cuid())
+  conversationId String
+  conversation   Conversation    @relation(fields: [conversationId], references: [id])
+  senderId       String
+  sender         AccountProfile  @relation("MessageSender", fields: [senderId], references: [id])
+  type           MessageType     @default(TEXT)
+  body           String?
+  attachmentUrls String[]
+  amount         Float?          // PRICE_PROPOSAL only
+  proposalStatus ProposalStatus? // PRICE_PROPOSAL only
+  errandId       String?         // set on an accepted proposal and on its SYSTEM message
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([conversationId, createdAt])
+  @@index([conversationId, updatedAt])
+}
+
 // A verification submission: either "prove this account is a real business"
 // or "prove this runner is eligible for this specific job category". One
 // row per submission/resubmission attempt.
@@ -325,6 +383,7 @@ model Post {
   category    JobCategory @relation(fields: [categoryId], references: [id])
   title       String
   description String
+  conversations Conversation[]
   tags        String[] // free-text, author-supplied — used for the "related" feed slice alongside category relationships
   location    Json // Location shape, see lib/validation/shared.ts
   status      PostStatus  @default(OPEN)
@@ -348,6 +407,9 @@ model ErrandRequest {
   deadline    DateTime?
   status      ErrandStatus @default(OPEN)
   runnerId    String?
+  agreedPrice    Float?   // set when the errand was created from an accepted chat price
+  sourcePostId   String?  // loose reference to the Post it came from
+  conversationId String?  // loose reference to the chat it was agreed in
   runner      AccountProfile? @relation("ErrandRunner", fields: [runnerId], references: [id])
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
@@ -529,6 +591,7 @@ model Notification {
   message         String
   relatedErrandId String?
   relatedRFQId    String?
+  relatedConversationId String?
   isRead          Boolean          @default(false)
   createdAt       DateTime         @default(now())
 }
