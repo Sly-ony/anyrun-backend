@@ -4,6 +4,8 @@ import prisma from "@/lib/prisma";
 import { requireAuth } from "@/lib/guard";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { loadConversation, readField, notifyNewMessage } from "@/lib/chat";
+import { maskContactInfo } from "@/lib/contactMask";
+import { assertWithinNewAccountLimit } from "@/lib/accountLimits";
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -38,6 +40,12 @@ export async function POST(request: NextRequest, { params }: Params) {
     const d = proposalSchema.parse(body);
     const amount = Math.round(d.amount * 100) / 100;
 
+    // New or unverified providers can only agree jobs up to a limit.
+    await assertWithinNewAccountLimit(conv.providerId, amount);
+
+    const noteResult = d.note ? maskContactInfo(d.note) : null;
+    const flagged = !!noteResult && (noteResult.masked || noteResult.offPlatform);
+
     const message = await prisma.$transaction(async (tx) => {
       await tx.message.updateMany({
         where: { conversationId: id, type: "PRICE_PROPOSAL", proposalStatus: "PENDING" },
@@ -48,11 +56,15 @@ export async function POST(request: NextRequest, { params }: Params) {
           conversationId: id,
           senderId: me,
           type: "PRICE_PROPOSAL",
-          body: d.note,
+          body: noteResult ? noteResult.text : undefined,
           amount,
           proposalStatus: "PENDING",
+          flagged,
         },
       });
+      if (noteResult?.masked) {
+        await tx.messageOriginal.create({ data: { messageId: m.id, body: d.note! } });
+      }
       await tx.conversation.update({
         where: { id },
         data: { lastMessageAt: new Date(), [readField(conv, me)]: new Date() },
@@ -63,7 +75,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     const recipientId = me === conv.customerId ? conv.providerId : conv.customerId;
     await notifyNewMessage(recipientId, id, "New price proposal", `A price of £${amount.toFixed(2)} was proposed.`);
 
-    return NextResponse.json({ message }, { status: 201 });
+    return NextResponse.json({ message, warning: noteResult?.warning ?? null }, { status: 201 });
   } catch (err) {
     return handleApiError(err);
   }

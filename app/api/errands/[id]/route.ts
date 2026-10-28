@@ -11,10 +11,32 @@ interface Params {
 export async function GET(request: NextRequest, { params }: Params) {
   const { id } = await params;
   try {
-    await requireAuth(request); // any authenticated account may view a single errand's detail
+    const auth = await requireAuth(request); // any authenticated account may view a single errand's detail
     const errand = await prisma.errandRequest.findUnique({ where: { id } });
     if (!errand) throw new ApiError(404, "Errand request not found.");
-    return NextResponse.json({ errand });
+
+    const isParty =
+      errand.customerId === auth.accountProfileId || errand.runnerId === auth.accountProfileId;
+
+    // Only the two people on the job learn about disputes and payment.
+    let dispute = null;
+    let escrowStatus: string | null = null;
+    if (isParty) {
+      const [d, order] = await Promise.all([
+        prisma.dispute.findFirst({
+          where: { relatedType: "ERRAND", relatedId: id, status: { in: ["OPEN", "IN_REVIEW"] } },
+          select: { id: true, status: true },
+        }),
+        prisma.orderTx.findUnique({
+          where: { sourceErrandId: id },
+          select: { escrowStatus: true },
+        }),
+      ]);
+      dispute = d;
+      escrowStatus = order?.escrowStatus ?? "NONE";
+    }
+
+    return NextResponse.json({ errand, dispute, escrowStatus });
   } catch (err) {
     return handleApiError(err);
   }
@@ -29,10 +51,10 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     if (!errand) throw new ApiError(404, "Errand request not found.");
 
     if (errand.customerId !== auth.accountProfileId) {
-      throw new ApiError(403, "Only the customer who posted this errand can edit it.");
+      throw new ApiError(403, "Only the customer who posted this job can edit it.");
     }
     if (errand.status !== "OPEN") {
-      throw new ApiError(409, "An errand can only be edited while it is still OPEN.");
+      throw new ApiError(409, "A job can only be edited while it is still OPEN.");
     }
 
     const body = await request.json().catch(() => {
@@ -62,12 +84,12 @@ export async function DELETE(request: NextRequest, { params }: Params) {
     if (!errand) throw new ApiError(404, "Errand request not found.");
 
     if (errand.customerId !== auth.accountProfileId) {
-      throw new ApiError(403, "Only the customer who posted this errand can cancel it.");
+      throw new ApiError(403, "Only the customer who posted this job can cancel it.");
     }
     if (errand.status !== "OPEN") {
       throw new ApiError(
         409,
-        "Only an OPEN errand can be cancelled this way — use the status endpoint once it has a runner."
+        "Only an OPEN job can be cancelled this way. Use the status endpoint once it has a provider."
       );
     }
 
