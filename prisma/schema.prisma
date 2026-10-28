@@ -150,6 +150,13 @@ enum ProposalStatus {
   CANCELLED
 }
 
+enum EscrowStatus {
+  NONE      // old-style order, paid directly after completion
+  HELD      // customer paid, platform is holding the money
+  RELEASED  // paid out to the provider's wallet
+  REFUNDED  // returned to the customer
+}
+
 
 // ----------------------------------------------------------------------------
 // Core identity
@@ -325,6 +332,7 @@ model Message {
   type           MessageType     @default(TEXT)
   body           String?
   attachmentUrls String[]
+  flagged        Boolean         @default(false) // contact details were hidden, or off-platform payment was mentioned
   amount         Float?          // PRICE_PROPOSAL only
   proposalStatus ProposalStatus? // PRICE_PROPOSAL only
   errandId       String?         // set on an accepted proposal and on its SYSTEM message
@@ -333,6 +341,27 @@ model Message {
 
   @@index([conversationId, createdAt])
   @@index([conversationId, updatedAt])
+}
+
+// The unmasked text of a chat message whose contact details were hidden.
+// Only the admin case file reads this; it is never returned to the chat users.
+model MessageOriginal {
+  messageId String   @id
+  body      String
+  createdAt DateTime @default(now())
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  errandId  String
+  authorId  String // who wrote it
+  targetId  String // who it is about
+  rating    Int // 1 to 5
+  comment   String?
+  createdAt DateTime @default(now())
+
+  @@unique([errandId, authorId])
+  @@index([targetId, createdAt])
 }
 
 // A verification submission: either "prove this account is a real business"
@@ -411,6 +440,8 @@ model ErrandRequest {
   sourcePostId   String?  // loose reference to the Post it came from
   conversationId String?  // loose reference to the chat it was agreed in
   runner      AccountProfile? @relation("ErrandRunner", fields: [runnerId], references: [id])
+  deliveredAt    DateTime? // when the provider marked it delivered
+  reminderSentAt DateTime? // 72-hour reminder sent to the customer
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
@@ -518,6 +549,9 @@ model OrderTx {
   sourceCatalogItem   CatalogItem? @relation(fields: [sourceCatalogItemId], references: [id])
   sourceCleaningBookingId String? @unique
   sourceCleaningBooking   CleaningBooking? @relation(fields: [sourceCleaningBookingId], references: [id])
+
+  escrowStatus   EscrowStatus @default(NONE)
+  refundedAmount Float        @default(0)
 
   amount           Float // gross amount paid by the payer
   commissionRate   Float // e.g. 0.1 for 10% — sourced from a settings/config table, not hardcoded
@@ -659,10 +693,25 @@ model Dispute {
   status          DisputeStatus      @default(OPEN)
   assignedToId    String? // a SUPPORT/DEVELOPER/SUPER_ADMIN admin
   resolutionNotes String?
+  evidenceUrls String[] // screenshots / photos supplied by the person who raised it
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
   resolvedAt      DateTime?
 }
+
+model ErrandEvent {
+  id         String        @id @default(cuid())
+  errandId   String
+  actorId    String? // AccountProfile.id; null for system events
+  fromStatus ErrandStatus?
+  toStatus   ErrandStatus
+  note       String?
+  createdAt  DateTime      @default(now())
+
+  @@index([errandId, createdAt])
+}
+
+
 
 // One row per OrderSourceType. A missing row means "use the env var default"
 // (see lib/commission.ts) — this table only holds explicit overrides, so

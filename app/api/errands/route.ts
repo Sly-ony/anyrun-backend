@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { requireAuth, requireRole } from "@/lib/guard";
+import { requireAuth } from "@/lib/guard";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { createErrandSchema } from "@/lib/validation/errand";
-import { ERRAND_CUSTOMER_ROLES, RUNNER_ROLE } from "@/lib/roles";
 import { anyRegionMatch } from "@/lib/region";
 import { asLocationArray } from "@/lib/json";
 import { parsePagination } from "@/lib/pagination";
@@ -13,7 +12,6 @@ import type { Prisma } from "@prisma/client";
 export async function POST(request: NextRequest) {
   try {
     const auth = await requireAuth(request);
-    requireRole(auth, ERRAND_CUSTOMER_ROLES);
 
     const body = await request.json().catch(() => {
       throw new ApiError(400, "Request body must be valid JSON.");
@@ -36,7 +34,7 @@ export async function POST(request: NextRequest) {
     try {
       await notifyNewErrandRequest(errand);
     } catch (e) {
-      console.error("Failed to notify runners of new errand:", e);
+      console.error("Failed to notify providers of new job:", e);
     }
 
     return NextResponse.json({ errand }, { status: 201 });
@@ -61,22 +59,19 @@ export async function GET(request: NextRequest) {
     if (mine) {
       clauses.push({ customerId: auth.accountProfileId });
     } else if (assignedToMe) {
-      
       clauses.push({ runnerId: auth.accountProfileId });
     } else {
-      // Default: the open browse feed, region-scoped for runners so they
-      // only see requests relevant to where they actually operate.
+      // Default: the open browse list. If the user has saved service regions,
+      // only jobs in those regions are shown.
       clauses.push({ status: "OPEN" });
 
-      if (auth.roles.includes(RUNNER_ROLE)) {
-        const profile = await prisma.accountProfile.findUnique({
-          where: { id: auth.accountProfileId },
-          select: { serviceRegions: true },
-        });
-        const regions = asLocationArray(profile?.serviceRegions);
-        if (regions.length > 0) {
-          clauses.push(anyRegionMatch("location", regions));
-        }
+      const profile = await prisma.accountProfile.findUnique({
+        where: { id: auth.accountProfileId },
+        select: { serviceRegions: true },
+      });
+      const regions = asLocationArray(profile?.serviceRegions);
+      if (regions.length > 0) {
+        clauses.push(anyRegionMatch("location", regions));
       }
     }
 

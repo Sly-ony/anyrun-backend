@@ -23,6 +23,17 @@ export async function GET(_request: NextRequest, { params }: Params) {
     const user = await prisma.user.findUnique({ where: { id: profile.userId } });
     if (!user) throw new ApiError(404, "Account not found.");
 
+    const [jobsCompleted, ratings] = await Promise.all([
+      prisma.errandRequest.count({
+        where: { status: "COMPLETED", OR: [{ customerId: id }, { runnerId: id }] },
+      }),
+      prisma.review.aggregate({
+        where: { targetId: id },
+        _avg: { rating: true },
+        _count: { _all: true },
+      }),
+    ]);
+
     return NextResponse.json({
       account: {
         id: profile.id,
@@ -47,6 +58,11 @@ export async function GET(_request: NextRequest, { params }: Params) {
           state: r.state,
           city: r.city,
         })),
+        stats: {
+          jobsCompleted,
+          ratingAverage: ratings._avg.rating ? Math.round(ratings._avg.rating * 10) / 10 : null,
+          ratingCount: ratings._count._all,
+        },
         createdAt: profile.createdAt,
       },
     });

@@ -4,14 +4,15 @@ import prisma from "@/lib/prisma";
 import { requireAuth } from "@/lib/guard";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { createAndChargeOrder } from "@/lib/orderService";
+import { assertNoOpenErrandDispute } from "@/lib/disputeRules";
 
 interface Params {
   params: Promise<{ id: string }>;
 }
 
-// For a job agreed in chat the price is already fixed (errand.agreedPrice), so
-// "amount" is optional and must match it. For older errands with no agreed
-// price, the payer still states the amount explicitly.
+// Old-style payment after completion. Jobs agreed in chat are paid up front
+// with POST /api/errands/[id]/fund and released automatically on completion,
+// so this endpoint only serves jobs that have no order yet.
 const paySchema = z.object({
   amount: z.number().positive("Amount must be greater than zero.").optional(),
 });
@@ -25,28 +26,34 @@ export async function POST(request: NextRequest, { params }: Params) {
     if (!errand) throw new ApiError(404, "Errand request not found.");
 
     if (errand.customerId !== auth.accountProfileId) {
-      throw new ApiError(403, "Only the customer who posted this errand can pay for it.");
+      throw new ApiError(403, "Only the customer who posted this job can pay for it.");
     }
     if (errand.status !== "COMPLETED") {
-      throw new ApiError(409, "An errand can only be paid once it is marked COMPLETED.");
+      throw new ApiError(409, "A job can only be paid once it is marked COMPLETED.");
     }
     if (!errand.runnerId) {
-      throw new ApiError(409, "This errand has no assigned runner to pay.");
+      throw new ApiError(409, "This job has no provider to pay.");
     }
 
     const existing = await prisma.orderTx.findUnique({
       where: { sourceErrandId: errand.id },
     });
     if (existing) {
-      throw new ApiError(409, "This errand has already been paid for.");
+      throw new ApiError(
+        409,
+        existing.escrowStatus === "NONE"
+          ? "This job has already been paid for."
+          : "This job was paid up front. The money is released to the provider when the job is completed."
+      );
     }
+
+    await assertNoOpenErrandDispute(id);
 
     const body = await request.json().catch(() => ({}));
     const parsed = paySchema.parse(body);
 
     let amount: number;
     if (errand.agreedPrice != null) {
-      // Agreed in chat: the payer can't change it.
       if (parsed.amount !== undefined && Math.abs(parsed.amount - errand.agreedPrice) > 0.005) {
         throw new ApiError(400, `Amount must match the agreed price of ${errand.agreedPrice.toFixed(2)}.`);
       }

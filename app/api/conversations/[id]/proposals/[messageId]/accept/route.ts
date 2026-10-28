@@ -109,6 +109,15 @@ export async function POST(request: NextRequest, { params }: Params) {
           conversationId: id,
         },
       });
+      await tx.errandEvent.create({
+        data: {
+          errandId: errand.id,
+          actorId: me,
+          fromStatus: null,
+          toStatus: "ACCEPTED",
+          note: "Created from an accepted chat price",
+        },
+      });
       await tx.message.update({ where: { id: messageId }, data: { errandId: errand.id } });
       const system = await tx.message.create({
         data: {

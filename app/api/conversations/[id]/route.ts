@@ -29,7 +29,27 @@ export async function GET(request: NextRequest, { params }: Params) {
       select: { id: true, status: true, agreedPrice: true },
     });
 
-    return NextResponse.json({ conversation: await shapeConversation(c, me), errand });
+    let underDispute = false;
+    let escrowStatus: string = "NONE";
+    if (errand) {
+      const [dispute, order] = await Promise.all([
+        prisma.dispute.findFirst({
+          where: { relatedType: "ERRAND", relatedId: errand.id, status: { in: ["OPEN", "IN_REVIEW"] } },
+          select: { id: true },
+        }),
+        prisma.orderTx.findUnique({
+          where: { sourceErrandId: errand.id },
+          select: { escrowStatus: true },
+        }),
+      ]);
+      underDispute = !!dispute;
+      escrowStatus = order?.escrowStatus ?? "NONE";
+    }
+
+    return NextResponse.json({
+      conversation: await shapeConversation(c, me),
+      errand: errand ? { ...errand, underDispute, escrowStatus } : null,
+    });
   } catch (err) {
     return handleApiError(err);
   }

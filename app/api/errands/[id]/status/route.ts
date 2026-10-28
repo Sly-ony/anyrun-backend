@@ -4,6 +4,8 @@ import { requireAuth } from "@/lib/guard";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { errandStatusChangeSchema } from "@/lib/validation/errand";
 import { checkErrandTransition } from "@/lib/errandStateMachine";
+import { assertNoOpenErrandDispute } from "@/lib/disputeRules";
+import { releaseEscrow, refundEscrow } from "@/lib/escrow";
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -18,32 +20,68 @@ export async function POST(request: NextRequest, { params }: Params) {
     if (!errand) throw new ApiError(404, "Errand request not found.");
 
     const isCustomer = errand.customerId === auth.accountProfileId;
-    const isRunner = errand.runnerId === auth.accountProfileId;
-    if (!isCustomer && !isRunner) {
-      throw new ApiError(403, "You are not a party to this errand.");
+    const isProvider = errand.runnerId === auth.accountProfileId;
+    if (!isCustomer && !isProvider) {
+      throw new ApiError(403, "You are not a party to this job.");
     }
+
+    await assertNoOpenErrandDispute(id);
 
     const body = await request.json().catch(() => {
       throw new ApiError(400, "Request body must be valid JSON.");
     });
     const { status: nextStatus } = errandStatusChangeSchema.parse(body);
 
-    // If the caller is somehow both (shouldn't happen — a runner can't accept
-    // their own errand) prefer whichever role the transition actually needs;
-    // checkErrandTransition will reject if neither role fits.
-    const actor: "customer" | "runner" = isCustomer ? "customer" : "runner";
+    const actor: "customer" | "provider" = isCustomer ? "customer" : "provider";
     const error = checkErrandTransition(errand.status, nextStatus, actor);
     if (error) throw new ApiError(409, error);
 
-    const updated = await prisma.errandRequest.update({
-      where: { id },
-      data: { status: nextStatus },
+    // Jobs agreed in chat must be funded (money held) before work can start.
+    if (errand.status === "ACCEPTED" && nextStatus === "IN_PROGRESS" && errand.agreedPrice != null) {
+      const order = await prisma.orderTx.findUnique({ where: { sourceErrandId: id } });
+      if (!order || order.escrowStatus !== "HELD") {
+        throw new ApiError(
+          409,
+          "The customer has not paid yet. Wait until the payment is held before you start work."
+        );
+      }
+    }
+
+    const { updated, escrow } = await prisma.$transaction(async (tx) => {
+      const changed = await tx.errandRequest.updateMany({
+        where: { id, status: errand.status },
+        data: {
+          status: nextStatus,
+          ...(nextStatus === "DELIVERED" ? { deliveredAt: new Date() } : {}),
+        },
+      });
+      if (changed.count === 0) {
+        throw new ApiError(409, "This job was just changed. Refresh and try again.");
+      }
+      await tx.errandEvent.create({
+        data: {
+          errandId: id,
+          actorId: auth.accountProfileId,
+          fromStatus: errand.status,
+          toStatus: nextStatus,
+        },
+      });
+
+      let escrow: "RELEASED" | "REFUNDED" | null = null;
+      if (nextStatus === "COMPLETED") {
+        escrow = (await releaseEscrow(tx, id)) ? "RELEASED" : null;
+      } else if (nextStatus === "CANCELLED") {
+        escrow = (await refundEscrow(tx, id)) ? "REFUNDED" : null;
+      }
+
+      const updated = await tx.errandRequest.findUnique({ where: { id } });
+      return { updated, escrow };
     });
 
-    // Marking COMPLETED unlocks payment, but doesn't trigger it automatically
-    // — the customer pays explicitly via POST /api/errands/[id]/pay.
-
-    return NextResponse.json({ errand: updated });
+    // escrow: "RELEASED" = money paid to the provider, "REFUNDED" = returned
+    // to the customer, null = no held money (old-style job: customer pays
+    // via POST /api/errands/[id]/pay after completion).
+    return NextResponse.json({ errand: updated, escrow });
   } catch (err) {
     return handleApiError(err);
   }

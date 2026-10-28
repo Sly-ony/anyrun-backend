@@ -4,6 +4,7 @@ import prisma from "@/lib/prisma";
 import { requireAuth } from "@/lib/guard";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { loadConversation, readField, notifyNewMessage, preview } from "@/lib/chat";
+import { maskContactInfo } from "@/lib/contactMask";
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -78,6 +79,8 @@ export async function GET(request: NextRequest, { params }: Params) {
 }
 
 // POST /api/conversations/{id}/messages   { body?, attachmentUrls? }
+// Phone numbers, emails and links are hidden before the message is saved, so
+// deals stay on the platform. The original is kept for admins only.
 export async function POST(request: NextRequest, { params }: Params) {
   const { id } = await params;
   try {
@@ -90,26 +93,34 @@ export async function POST(request: NextRequest, { params }: Params) {
     });
     const d = sendSchema.parse(body);
 
-    const [message] = await prisma.$transaction([
-      prisma.message.create({
+    const result = d.body ? maskContactInfo(d.body) : null;
+    const flagged = !!result && (result.masked || result.offPlatform);
+
+    const message = await prisma.$transaction(async (tx) => {
+      const created = await tx.message.create({
         data: {
           conversationId: id,
           senderId: me,
           type: "TEXT",
-          body: d.body,
+          body: result ? result.text : undefined,
           attachmentUrls: d.attachmentUrls ?? [],
+          flagged,
         },
-      }),
-      prisma.conversation.update({
+      });
+      if (result?.masked) {
+        await tx.messageOriginal.create({ data: { messageId: created.id, body: d.body! } });
+      }
+      await tx.conversation.update({
         where: { id },
         data: { lastMessageAt: new Date(), [readField(conv, me)]: new Date() },
-      }),
-    ]);
+      });
+      return created;
+    });
 
     const recipientId = me === conv.customerId ? conv.providerId : conv.customerId;
-    await notifyNewMessage(recipientId, id, "New message", preview(d.body), true);
+    await notifyNewMessage(recipientId, id, "New message", preview(message.body), true);
 
-    return NextResponse.json({ message }, { status: 201 });
+    return NextResponse.json({ message, warning: result?.warning ?? null }, { status: 201 });
   } catch (err) {
     return handleApiError(err);
   }
