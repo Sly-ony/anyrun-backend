@@ -1,6 +1,7 @@
 import prisma from "./prisma";
 import { getRelatedCategoryIds } from "./categoryRelations";
 import { POST_INCLUDE, type PostWithRelations } from "./postShape";
+import type { PostType } from "@prisma/client";
 
 // Easy to retune later — see docs/USER_API.md's Feed section for the
 // rationale (sourced from the founder's description: "70% exact match, 25%
@@ -10,7 +11,7 @@ const WEIGHTS = { primary: 0.7, secondary: 0.25, related: 0.05 };
 export type FeedViewpoint = "PROVIDER" | "SEEKER";
 
 export interface FeedResult extends PostWithRelations {
-  feedBucket: "primary" | "secondary" | "related";
+  feedBucket: "primary" | "secondary" | "related" | "selected" | "other";
 }
 
 function splitCounts(pageSize: number) {
@@ -139,4 +140,89 @@ export async function getWeightedFeed(params: GetFeedParams): Promise<FeedPage> 
   ]);
 
   return { items, composition: counts, page, pageSize };
+}
+
+export interface GetPersonalFeedParams {
+  selectedCategoryIds: string[];
+  viewerAccountProfileId: string;
+  type?: PostType;
+  page: number;
+  pageSize: number;
+}
+
+/**
+ * Personalised feed: mostly posts from the viewer's own selected job
+ * categories (~70%), then categories related to them (~25%), then anything
+ * else (~5%). Both NEED and OFFER posts, unless `type` narrows it.
+ */
+export async function getPersonalizedFeed(params: GetPersonalFeedParams) {
+  const { selectedCategoryIds, viewerAccountProfileId, type, page, pageSize } = params;
+
+  const base = {
+    status: "OPEN" as const,
+    authorId: { not: viewerAccountProfileId },
+    ...(type ? { type } : {}),
+  };
+
+  const relatedLists = await Promise.all(selectedCategoryIds.map((id) => getRelatedCategoryIds(id)));
+  const relatedIds = Array.from(new Set(relatedLists.flat())).filter(
+    (id) => !selectedCategoryIds.includes(id)
+  );
+  const excludeIds = [...selectedCategoryIds, ...relatedIds];
+
+  let selectedCount = Math.round(pageSize * 0.7);
+  let relatedCount = Math.round(pageSize * 0.25);
+  let otherCount = Math.max(0, pageSize - selectedCount - relatedCount);
+  if (selectedCategoryIds.length === 0) {
+    // No jobs picked yet: plain newest-first feed.
+    selectedCount = 0;
+    relatedCount = 0;
+    otherCount = pageSize;
+  } else if (relatedIds.length === 0) {
+    selectedCount += relatedCount;
+    relatedCount = 0;
+  }
+
+  const [selectedPosts, relatedPosts, otherPosts] = await Promise.all([
+    selectedCount > 0
+      ? prisma.post.findMany({
+          include: POST_INCLUDE,
+          where: { ...base, categoryId: { in: selectedCategoryIds } },
+          orderBy: { createdAt: "desc" },
+          skip: (page - 1) * selectedCount,
+          take: selectedCount,
+        })
+      : Promise.resolve([] as PostWithRelations[]),
+    relatedCount > 0
+      ? prisma.post.findMany({
+          include: POST_INCLUDE,
+          where: { ...base, categoryId: { in: relatedIds } },
+          orderBy: { createdAt: "desc" },
+          skip: (page - 1) * relatedCount,
+          take: relatedCount,
+        })
+      : Promise.resolve([] as PostWithRelations[]),
+    otherCount > 0
+      ? prisma.post.findMany({
+          include: POST_INCLUDE,
+          where: { ...base, categoryId: { notIn: excludeIds } },
+          orderBy: { createdAt: "desc" },
+          skip: (page - 1) * otherCount,
+          take: otherCount,
+        })
+      : Promise.resolve([] as PostWithRelations[]),
+  ]);
+
+  const items = interleave([
+    { items: selectedPosts, weight: Math.max(selectedCount, 1) / pageSize, bucket: "selected" },
+    { items: relatedPosts, weight: Math.max(relatedCount, 1) / pageSize, bucket: "related" },
+    { items: otherPosts, weight: Math.max(otherCount, 1) / pageSize, bucket: "other" },
+  ]);
+
+  return {
+    items,
+    composition: { selected: selectedCount, related: relatedCount, other: otherCount },
+    page,
+    pageSize,
+  };
 }
