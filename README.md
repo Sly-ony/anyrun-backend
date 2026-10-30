@@ -24,9 +24,7 @@ this can never slip through:
 "scripts": {
   "build": "prisma generate && next build"
 }
-```
-(or a `"postinstall": "prisma generate"` script — either works; the build
-command is more explicit about why it's there).
+
 
 ## Setup
 
