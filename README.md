@@ -140,8 +140,8 @@ app/api/
   notifications/      In-app notifications
   blog/, adverts/     Admin-authored content (public read, EDITOR+ write)
   disputes/           Raise (any user) / manage (SUPPORT+) disputes
-  wallet/             Balance, ledger, deposits, withdrawals (Paystack/Flutterwave)
-  webhooks/           Public gateway callbacks: paystack/, flutterwave/
+  wallet/             Balance, ledger, deposits, withdrawals (Paystack)
+  webhooks/           Public gateway callbacks: paystack/
   admin/
     admins/           SUPER_ADMIN grants/revokes EDITOR, SUPPORT, DEVELOPER
     commission-rates/ View (SUPER_ADMIN, DEVELOPER) / edit (SUPER_ADMIN only)
