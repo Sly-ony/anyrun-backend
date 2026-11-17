@@ -63,6 +63,14 @@ export async function GET(request: NextRequest) {
       user: sanitizeUser(user),
       profile,
       jobCategories, // full details (id, name, ...) for profile.jobCategoryIds
+      // The only account facts the app should branch on. "roles" in the profile is
+      // an internal detail and should not be used to decide what to show.
+      account: {
+        kind: profile.accountKind, // "INDIVIDUAL" | "BUSINESS"
+        providesServices: isProvider, // chose "I provide a service" at registration
+        canProvideServices: profile.canProvideServices, // VAT + insurance approved by an admin
+        isAdmin: !!profile.adminRole,
+      },
       onboarding: {
         missing, // steps the user still has to submit
         nextStep: missing[0] ?? null,

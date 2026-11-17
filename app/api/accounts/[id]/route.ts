@@ -39,6 +39,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
         id: profile.id,
         name: user.name,
         avatarUrl: user.avatarUrl,
+        bio: profile.bio,
         roles: profile.roles,
         businessName: profile.businessName,
         source: profile.source,

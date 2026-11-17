@@ -182,6 +182,7 @@ model AccountProfile {
   userId        String        @unique
   user          User          @relation(fields: [userId], references: [id])
   roles         AccountType[]
+  bio String? // short "about me", editable by the user
   accountKind   AccountKind   // derived from roles at sign-up — see the enum comment
   // Comprehensive address, required of every account at sign-up (not the
   // same thing as serviceRegions below, which is "areas I operate in" and
