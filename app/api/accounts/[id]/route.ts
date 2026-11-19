@@ -7,16 +7,14 @@ interface Params {
   params: Promise<{ id: string }>;
 }
 
-// Public: no auth required to look up a business's display info. Deliberately
-// strips anything precise (postalCode, coordinates) from serviceRegions —
-// city/state level is enough for "does this supplier cover my area?", and we
-// don't want to publish exact addresses for accounts that haven't opted into
-// that via a catalog listing or an active request.
+// Public: no auth required. Never returns email, phone, street address, VAT or
+// documents. City/state level only.
 export async function GET(_request: NextRequest, { params }: Params) {
   const { id } = await params;
   try {
     const profile = await prisma.accountProfile.findUnique({ where: { id } });
-    if (!profile || !profile.isActive) {
+    // deletedAt check added: deleted businesses must not have a public page.
+    if (!profile || !profile.isActive || profile.deletedAt) {
       throw new ApiError(404, "Account not found.");
     }
 
@@ -43,16 +41,12 @@ export async function GET(_request: NextRequest, { params }: Params) {
         roles: profile.roles,
         businessName: profile.businessName,
         source: profile.source,
-        isCleaningProvider: profile.roles.includes("CLEANING_PROVIDER"),
-        // City/state only, never the full street address — same privacy
-        // reasoning as serviceRegions below. Only present for BUSINESS
-        // accounts; an individual's home address is never public at all.
         businessLocation:
           profile.accountKind === "BUSINESS" && profile.businessAddress
             ? (() => {
-              const a = asAddress(profile.businessAddress);
-              return { country: a.country, state: a.state, city: a.city };
-            })()
+                const a = asAddress(profile.businessAddress);
+                return { country: a.country, state: a.state, city: a.city };
+              })()
             : null,
         serviceRegions: asLocationArray(profile.serviceRegions).map((r) => ({
           country: r.country,

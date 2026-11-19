@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { AccountType, Prisma } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { requireAuth } from "@/lib/guard";
 import { requireSuperAdmin } from "@/lib/adminPermissions";
@@ -10,7 +10,7 @@ import { deriveRoles } from "@/lib/roles";
 import { sanitizeUser } from "@/lib/user";
 import { logAdminAction } from "@/lib/auditLog";
 import { createBusinessSchema } from "@/lib/validation/adminBusiness";
-import { assertBusinessNameFree, assertNoOtherCleaningProvider } from "@/lib/adminBusinesses";
+import { assertBusinessNameFree } from "@/lib/adminBusinesses";
 
 // GET /api/admin/businesses?source=USER|ADMIN|ALL&q=&page=&pageSize=
 export async function GET(request: NextRequest) {
@@ -56,7 +56,6 @@ export async function GET(request: NextRequest) {
     const items = profiles.map(({ user, ...profile }) => ({
       user: sanitizeUser(user),
       profile,
-      isCleaningProvider: profile.roles.includes("CLEANING_PROVIDER"),
     }));
 
     return NextResponse.json({ items, page, pageSize, total });
@@ -65,7 +64,8 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST /api/admin/businesses  — one form, saved to User + AccountProfile (+ documents)
+// POST /api/admin/businesses — one form, saved to User + AccountProfile (+ documents).
+// The business is a normal provider that the admin has vouched for.
 export async function POST(request: NextRequest) {
   try {
     const auth = await requireAuth(request);
@@ -83,12 +83,9 @@ export async function POST(request: NextRequest) {
       throw new ApiError(409, "An account with this email or phone already exists.");
     }
     await assertBusinessNameFree(d.businessName);
-    if (d.isCleaningProvider) await assertNoOtherCleaningProvider();
 
     const passwordHash = await hashPassword(d.password);
-    const roles: AccountType[] = d.isCleaningProvider
-      ? ["CLEANING_PROVIDER"]
-      : deriveRoles("BUSINESS", "PROVIDE_SERVICE");
+    const roles = deriveRoles("BUSINESS", "PROVIDE_SERVICE");
 
     const { user, profile } = await prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
@@ -133,17 +130,9 @@ export async function POST(request: NextRequest) {
 
     await logAdminAction(auth.accountProfileId, "BUSINESS_CREATED", "AccountProfile", profile.id, {
       businessName: d.businessName,
-      isCleaningProvider: d.isCleaningProvider,
     });
 
-    return NextResponse.json(
-      {
-        user: sanitizeUser(user),
-        profile,
-        isCleaningProvider: roles.includes("CLEANING_PROVIDER"),
-      },
-      { status: 201 }
-    );
+    return NextResponse.json({ user: sanitizeUser(user), profile }, { status: 201 });
   } catch (err) {
     return handleApiError(err);
   }

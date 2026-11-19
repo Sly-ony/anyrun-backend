@@ -1,15 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { AccountType } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { requireAuth } from "@/lib/guard";
 import { requireSuperAdmin } from "@/lib/adminPermissions";
 import { ApiError, handleApiError } from "@/lib/apiError";
 import { hashPassword } from "@/lib/password";
-import { deriveRoles } from "@/lib/roles";
 import { sanitizeUser } from "@/lib/user";
 import { logAdminAction } from "@/lib/auditLog";
 import { updateBusinessSchema } from "@/lib/validation/adminBusiness";
-import { assertBusinessNameFree, assertNoOtherCleaningProvider } from "@/lib/adminBusinesses";
+import { assertBusinessNameFree } from "@/lib/adminBusinesses";
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -37,12 +35,7 @@ export async function GET(request: NextRequest, { params }: Params) {
       orderBy: { submittedAt: "desc" },
     });
 
-    return NextResponse.json({
-      user: sanitizeUser(user),
-      profile,
-      documents,
-      isCleaningProvider: profile.roles.includes("CLEANING_PROVIDER"),
-    });
+    return NextResponse.json({ user: sanitizeUser(user), profile, documents });
   } catch (err) {
     return handleApiError(err);
   }
@@ -75,14 +68,6 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     }
     if (d.businessName) await assertBusinessNameFree(d.businessName, id);
 
-    let roles: AccountType[] | undefined;
-    if (d.isCleaningProvider === true) {
-      await assertNoOtherCleaningProvider(id);
-      roles = ["CLEANING_PROVIDER"];
-    } else if (d.isCleaningProvider === false && current.roles.includes("CLEANING_PROVIDER")) {
-      roles = deriveRoles("BUSINESS", "PROVIDE_SERVICE");
-    }
-
     const passwordHash = d.password ? await hashPassword(d.password) : undefined;
 
     const [user, profile] = await prisma.$transaction([
@@ -107,7 +92,6 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           ...(d.insuranceDocumentUrl !== undefined
             ? { insuranceDocumentUrl: d.insuranceDocumentUrl }
             : {}),
-          ...(roles ? { roles } : {}),
         },
       }),
     ]);
@@ -117,11 +101,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       passwordReset: !!d.password,
     });
 
-    return NextResponse.json({
-      user: sanitizeUser(user),
-      profile,
-      isCleaningProvider: profile.roles.includes("CLEANING_PROVIDER"),
-    });
+    return NextResponse.json({ user: sanitizeUser(user), profile });
   } catch (err) {
     return handleApiError(err);
   }
@@ -139,13 +119,14 @@ export async function DELETE(request: NextRequest, { params }: Params) {
       throw new ApiError(403, "Only businesses added by an admin can be deleted here.");
     }
 
-    const openBookings = await prisma.cleaningBooking.count({
-      where: { providerId: id, status: { in: ["PENDING", "CONFIRMED", "IN_PROGRESS"] } },
+    // Don't strand a customer's job (and held money) with an account that can't log in.
+    const openJobs = await prisma.errandRequest.count({
+      where: { runnerId: id, status: { in: ["ACCEPTED", "IN_PROGRESS", "DELIVERED"] } },
     });
-    if (openBookings > 0) {
+    if (openJobs > 0) {
       throw new ApiError(
         409,
-        `This business has ${openBookings} open cleaning booking(s). Complete or cancel them first.`
+        `This business has ${openJobs} unfinished job(s). Complete or cancel them first.`
       );
     }
 

@@ -58,7 +58,6 @@ export async function GET(request: NextRequest) {
           city: r.city,
         })),
         source: p.source,
-        isCleaningProvider: p.roles.includes("CLEANING_PROVIDER"),
         createdAt: p.createdAt,
       };
     });
