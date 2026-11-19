@@ -157,24 +157,6 @@ Every account has a GBP wallet balance, funded by deposits and by earnings
 auto-credited when an errand/RFQ/catalog/cleaning/delivery payment succeeds.
 Full reference in `docs/USER_API.md` section 13 ("Wallet").
 
-**Before deploying with real money movement:**
-- `lib/payments/paystack.ts` and `lib/payments/flutterwave.ts` are real REST
-  integrations against each gateway's public API, not mocks — but verify
-  field names against current docs (gateway APIs change) before going live.
-- **Paystack does not support GBP settlement or UK bank payouts** as far as
-  its public documentation goes (NGN/GHS/ZAR/KES only) — confirm with
-  Paystack directly what your specific merchant account supports before
-  relying on it for this business.
-- Configure `PAYSTACK_SECRET_KEY`, `FLUTTERWAVE_SECRET_KEY`,
-  `FLUTTERWAVE_WEBHOOK_HASH`, and `WALLET_DEPOSIT_CALLBACK_URL` (see
-  `.env.example`), and point each gateway's dashboard webhook config at
-  `/api/webhooks/paystack` and `/api/webhooks/flutterwave` respectively.
-- The errand/RFQ/catalog/cleaning `.../pay` endpoints still use the
-  separate **mocked** `lib/paymentProvider.ts` — they are not yet wired to
-  the real gateways or to spending from the wallet. Only deposits and
-  withdrawals use Paystack/Flutterwave for real. See `docs/USER_API.md`
-  section 13 for the full explanation of that boundary.
-
 ## Admin role hierarchy
 
 `AccountProfile.adminRole` (nullable) is `SUPER_ADMIN`, `EDITOR`, `SUPPORT`,
